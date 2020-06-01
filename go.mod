@@ -74,6 +74,7 @@ require (
 	k8s.io/cli-runtime v0.17.0
 	k8s.io/client-go v0.17.0
 	k8s.io/component-base v0.17.0
+	k8s.io/cri-api v0.17.0 // indirect
 	k8s.io/klog v1.0.0
 	k8s.io/kube-aggregator v0.0.0
 	k8s.io/kubectl v0.0.0

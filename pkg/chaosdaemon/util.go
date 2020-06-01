@@ -15,7 +15,11 @@ package chaosdaemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/containerd/containerd/runtime/v2/task"
+	"github.com/docker/docker/daemon/cluster/executor/container"
+	"google.golang.org/grpc"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -27,6 +31,7 @@ import (
 	"github.com/containerd/containerd"
 	"github.com/docker/docker/api/types"
 	dockerclient "github.com/docker/docker/client"
+	cri "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
 
 	"github.com/pingcap/chaos-mesh/pkg/mock"
 	"github.com/pingcap/chaos-mesh/pkg/utils"
@@ -35,6 +40,7 @@ import (
 const (
 	containerRuntimeDocker     = "docker"
 	containerRuntimeContainerd = "containerd"
+	containerRuntimeCRIO = "crio"
 
 	defaultDockerSocket  = "unix:///var/run/docker.sock"
 	dockerProtocolPrefix = "docker://"
@@ -43,6 +49,9 @@ const (
 	defaultContainerdSocket  = "/run/containerd/containerd.sock"
 	containerdProtocolPrefix = "containerd://"
 	containerdDefaultNS      = "k8s.io"
+
+	crioProtocolPrefix = "crio://"
+	defaultCRIOSocket = ""
 
 	defaultProcPrefix = "/proc"
 )
@@ -54,7 +63,7 @@ type ContainerRuntimeInfoClient interface {
 	FormatContainerID(ctx context.Context, containerID string) (string, error)
 }
 
-// DockerClientInterface represents the DockerClient, it's used to simply unit test
+// DockerClientInterface represents the DockerClient, it's used to simplify unit test
 type DockerClientInterface interface {
 	ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
 	ContainerKill(ctx context.Context, containerID, signal string) error
@@ -156,6 +165,59 @@ func newContainerdClient(address string, opts ...containerd.ClientOpt) (Containe
 	return containerd.New(address, opts...)
 }
 
+type CRIClient struct {
+	client cri.RuntimeServiceClient
+}
+
+// newCRIClient returns a CRIO client
+func newCRIClient(address string) (*CRIClient, error) {
+	conn, err :=
+	if err != nil {
+		return nil, err
+	}
+
+	return &CRIClient{
+		cri.NewRuntimeServiceClient(conn),
+	}, nil
+}
+
+// FormatContainerID strips protocol prefix from the container ID
+func (c CRIClient) FormatContainerID(ctx context.Context, containerID string) (string, error) {
+	if len(containerID) < len(crioProtocolPrefix) {
+		return "", fmt.Errorf("container id %s is not a crio container id", containerID)
+	}
+	if containerID[0:len(crioProtocolPrefix)] != crioProtocolPrefix {
+		return "", fmt.Errorf("expected %s but got %s", crioProtocolPrefix, containerID[0:len(crioProtocolPrefix)])
+	}
+	return containerID[len(crioProtocolPrefix):], nil
+}
+
+// GetPidFromContainerID fetches PID according to container id
+func (c CRIClient) GetPidFromContainerID(ctx context.Context, containerID string) (uint32, error) {
+	id, err := c.FormatContainerID(ctx, containerID)
+	if err != nil {
+		return 0, err
+	}
+	res, err := c.client.ContainerStatus(ctx, cri.ContainerStatusRequest{ContainerId: containerID})
+	if err != nil {
+		return 0, err
+	}
+
+	info := res.Info
+	pidString, ok := info["pid"]
+	if !ok {
+		// this should not happen
+		return 0, errors.New("no pid from CRI response")
+	}
+
+	pid, err := strconv.Atoi(pidString)
+	if err != nil {
+		return 0, err
+	}
+
+	return pid, nil
+}
+
 // CreateContainerRuntimeInfoClient creates a container runtime information client.
 func CreateContainerRuntimeInfoClient(containerRuntime string) (ContainerRuntimeInfoClient, error) {
 	// TODO: support more container runtime
@@ -176,6 +238,13 @@ func CreateContainerRuntimeInfoClient(containerRuntime string) (ContainerRuntime
 			return nil, err
 		}
 		cli = ContainerdClient{client}
+
+	case containerRuntimeCRIO:
+		conn, err := grpc.Dial(defaultCRIOSocket, grpc.WithInsecure(), grpc.WithBlock(),
+			grpc.WithUnaryInterceptor(utils.TimeoutClientInterceptor))
+		if err != nil {
+			return nil, err
+		cli = CRIClient{client: cri.NewRuntimeServiceClient(conn)}
 
 	default:
 		return nil, fmt.Errorf("only docker and containerd is supported, but got %s", containerRuntime)
@@ -204,27 +273,21 @@ func withNetNS(ctx context.Context, nsPath string, cmd string, args ...string) *
 
 // ContainerKillByContainerID kills container according to container id
 func (c DockerClient) ContainerKillByContainerID(ctx context.Context, containerID string) error {
-	if len(containerID) < len(dockerProtocolPrefix) {
-		return fmt.Errorf("container id %s is not a docker container id", containerID)
+	id, err := c.FormatContainerID(ctx, containerID)
+	if err != nil {
+		return err
 	}
-	if containerID[0:len(dockerProtocolPrefix)] != dockerProtocolPrefix {
-		return fmt.Errorf("expected %s but got %s", dockerProtocolPrefix, containerID[0:len(dockerProtocolPrefix)])
-	}
-	err := c.client.ContainerKill(ctx, containerID[len(dockerProtocolPrefix):], "SIGKILL")
 
-	return err
+	return c.client.ContainerKill(ctx, id, "SIGKILL")
 }
 
 // ContainerKillByContainerID kills container according to container id
 func (c ContainerdClient) ContainerKillByContainerID(ctx context.Context, containerID string) error {
-	if len(containerID) < len(containerdProtocolPrefix) {
-		return fmt.Errorf("container id %s is not a containerd container id", containerID)
+	id, err := c.FormatContainerID(ctx, containerID)
+	if err != nil {
+		return err
 	}
-	if containerID[0:len(containerdProtocolPrefix)] != containerdProtocolPrefix {
-		return fmt.Errorf("expected %s but got %s", containerdProtocolPrefix, containerID[0:len(containerdProtocolPrefix)])
-	}
-	containerID = containerID[len(containerdProtocolPrefix):]
-	container, err := c.client.LoadContainer(ctx, containerID)
+	container, err := c.client.LoadContainer(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -233,8 +296,16 @@ func (c ContainerdClient) ContainerKillByContainerID(ctx context.Context, contai
 		return err
 	}
 
-	err = task.Kill(ctx, syscall.SIGKILL)
+	return task.Kill(ctx, syscall.SIGKILL)
+}
 
+// ContainerKillByContainerID kills container according to container id
+func (c CRIClient) ContainerKillByContainerID(ctx context.Context, containerID string) error {
+	id, err := c.FormatContainerID(ctx, containerID)
+	if err != nil {
+		return err
+	}
+	_, err = c.client.RemoveContainer(ctx, &cri.RemoveContainerRequest{ContainerId: id})
 	return err
 }
 
