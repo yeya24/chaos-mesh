@@ -16,6 +16,7 @@ package v1alpha1
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -48,15 +49,22 @@ func (in *NetworkChaos) Default() {
 	in.Spec.Selector.DefaultNamespace(in.GetNamespace())
 	// the target's namespace selector
 	if in.Spec.Target != nil {
-		in.Spec.Target.TargetSelector.DefaultNamespace(in.GetNamespace())
+		in.Spec.Target.Selector.DefaultNamespace(in.GetNamespace())
 	}
 
+	in.Spec.Default()
+}
+
+func (in *NetworkChaosSpec) Default() {
 	// set default direction
-	if in.Spec.Direction == "" {
-		in.Spec.Direction = To
+	if in.Direction == "" {
+		in.Direction = To
 	}
 
-	in.Spec.DefaultDelay()
+	in.DefaultDelay()
+	in.DefaultLoss()
+	in.DefaultDuplicate()
+	in.DefaultCorrupt()
 }
 
 // DefaultDelay set the default value if Jitter or Correlation is not set
@@ -68,12 +76,42 @@ func (in *NetworkChaosSpec) DefaultDelay() {
 		if in.Delay.Correlation == "" {
 			in.Delay.Correlation = DefaultCorrelation
 		}
+
+		if in.Delay.Reorder != nil {
+			if in.Delay.Reorder.Correlation == "" {
+				in.Delay.Reorder.Correlation = DefaultCorrelation
+			}
+		}
+	}
+}
+
+func (in *NetworkChaosSpec) DefaultLoss() {
+	if in.Loss != nil {
+		if in.Loss.Correlation == "" {
+			in.Loss.Correlation = DefaultCorrelation
+		}
+	}
+}
+
+func (in *NetworkChaosSpec) DefaultDuplicate() {
+	if in.Duplicate != nil {
+		if in.Duplicate.Correlation == "" {
+			in.Duplicate.Correlation = DefaultCorrelation
+		}
+	}
+}
+
+func (in *NetworkChaosSpec) DefaultCorrupt() {
+	if in.Corrupt != nil {
+		if in.Corrupt.Correlation == "" {
+			in.Corrupt.Correlation = DefaultCorrelation
+		}
 	}
 }
 
 // +kubebuilder:webhook:verbs=create;update,path=/validate-chaos-mesh-org-v1alpha1-networkchaos,mutating=false,failurePolicy=fail,groups=chaos-mesh.org,resources=networkchaos,versions=v1alpha1,name=vnetworkchaos.kb.io
 
-var _ ChaosValidator = &NetworkChaos{}
+var _ webhook.Validator = &NetworkChaos{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (in *NetworkChaos) ValidateCreate() error {
@@ -84,6 +122,9 @@ func (in *NetworkChaos) ValidateCreate() error {
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (in *NetworkChaos) ValidateUpdate(old runtime.Object) error {
 	networkchaoslog.Info("validate update", "name", in.Name)
+	if !reflect.DeepEqual(in.Spec, old.(*NetworkChaos).Spec) {
+		return ErrCanNotUpdateChaos
+	}
 	return in.Validate()
 }
 
@@ -97,30 +138,8 @@ func (in *NetworkChaos) ValidateDelete() error {
 
 // Validate validates chaos object
 func (in *NetworkChaos) Validate() error {
-	specField := field.NewPath("spec")
-	allErrs := in.ValidateScheduler(specField)
-	allErrs = append(allErrs, in.ValidatePodMode(specField)...)
-	allErrs = append(allErrs, in.ValidateTargets(specField)...)
 
-	if in.Spec.Delay != nil {
-		allErrs = append(allErrs, in.Spec.Delay.validateDelay(specField.Child("delay"))...)
-	}
-	if in.Spec.Loss != nil {
-		allErrs = append(allErrs, in.Spec.Loss.validateLoss(specField.Child("loss"))...)
-	}
-	if in.Spec.Duplicate != nil {
-		allErrs = append(allErrs, in.Spec.Duplicate.validateDuplicate(specField.Child("duplicate"))...)
-	}
-	if in.Spec.Corrupt != nil {
-		allErrs = append(allErrs, in.Spec.Corrupt.validateCorrupt(specField.Child("corrupt"))...)
-	}
-	if in.Spec.Bandwidth != nil {
-		allErrs = append(allErrs, in.Spec.Bandwidth.validateBandwidth(specField.Child("bandwidth"))...)
-	}
-
-	if in.Spec.Target != nil {
-		allErrs = append(allErrs, in.Spec.Target.validateTarget(specField.Child("target"))...)
-	}
+	allErrs := in.Spec.Validate()
 
 	if len(allErrs) > 0 {
 		return fmt.Errorf(allErrs.ToAggregate().Error())
@@ -128,50 +147,30 @@ func (in *NetworkChaos) Validate() error {
 	return nil
 }
 
-// ValidateScheduler validates the scheduler and duration
-func (in *NetworkChaos) ValidateScheduler(spec *field.Path) field.ErrorList {
-	return ValidateScheduler(in, spec)
-}
+func (in *NetworkChaosSpec) Validate() field.ErrorList {
+	specField := field.NewPath("spec")
+	var allErrs field.ErrorList
 
-// ValidatePodMode validates the value with podmode
-func (in *NetworkChaos) ValidatePodMode(spec *field.Path) field.ErrorList {
-	return ValidatePodMode(in.Spec.Value, in.Spec.Mode, spec.Child("value"))
-}
-
-// SelectSpec returns the selector config for authority validate
-func (in *NetworkChaos) GetSelectSpec() []SelectSpec {
-	selectSpecs := []SelectSpec{&in.Spec}
-	// when direction is both or from, will need to update target Pods
-	if in.Spec.Direction != To {
-		selectSpecs = append(selectSpecs, in.Spec.Target)
+	allErrs = append(allErrs, validateDuration(in, specField)...)
+	allErrs = append(allErrs, in.validateTargets(specField.Child("target"))...)
+	if in.Delay != nil {
+		allErrs = append(allErrs, in.Delay.validateDelay(specField.Child("delay"))...)
 	}
-	return selectSpecs
-}
-
-// ValidateTargets validates externalTargets and Targets
-func (in *NetworkChaos) ValidateTargets(target *field.Path) field.ErrorList {
-	allErrs := field.ErrorList{}
-
-	if (in.Spec.Direction == From || in.Spec.Direction == Both) &&
-		in.Spec.ExternalTargets != nil && in.Spec.Action != PartitionAction {
-		allErrs = append(allErrs,
-			field.Invalid(target.Child("direction"), in.Spec.Direction,
-				fmt.Sprintf("external targets cannot be used with `from` and `both` direction in netem action yet")))
+	if in.Loss != nil {
+		allErrs = append(allErrs, in.Loss.validateLoss(specField.Child("loss"))...)
 	}
-
-	if (in.Spec.Direction == From || in.Spec.Direction == Both) && in.Spec.Target == nil {
-		if in.Spec.Action != PartitionAction {
-			allErrs = append(allErrs,
-				field.Invalid(target.Child("direction"), in.Spec.Direction,
-					fmt.Sprintf("`from` and `both` direction cannot be used when targets is empty in netem action")))
-		} else if in.Spec.ExternalTargets == nil {
-			allErrs = append(allErrs,
-				field.Invalid(target.Child("direction"), in.Spec.Direction,
-					fmt.Sprintf("`from` and `both` direction cannot be used when targets and external targets are both empty")))
-		}
+	if in.Duplicate != nil {
+		allErrs = append(allErrs, in.Duplicate.validateDuplicate(specField.Child("duplicate"))...)
 	}
-
-	// TODO: validate externalTargets are in ip or domain form
+	if in.Corrupt != nil {
+		allErrs = append(allErrs, in.Corrupt.validateCorrupt(specField.Child("corrupt"))...)
+	}
+	if in.Bandwidth != nil {
+		allErrs = append(allErrs, in.Bandwidth.validateBandwidth(specField.Child("bandwidth"))...)
+	}
+	if in.Target != nil {
+		allErrs = append(allErrs, in.validateTargetPodSelector(specField.Child("target"))...)
+	}
 
 	return allErrs
 }
@@ -296,20 +295,6 @@ func (in *BandwidthSpec) validateBandwidth(bandwidth *field.Path) field.ErrorLis
 	return allErrs
 }
 
-// validateTarget validates the target
-func (in *Target) validateTarget(target *field.Path) field.ErrorList {
-	modes := []PodMode{OnePodMode, AllPodMode, FixedPodMode, FixedPercentPodMode, RandomMaxPercentPodMode}
-
-	for _, mode := range modes {
-		if in.TargetMode == mode {
-			return ValidatePodMode(in.TargetValue, in.TargetMode, target.Child("value"))
-		}
-	}
-
-	return field.ErrorList{field.Invalid(target.Child("mode"), in.TargetMode,
-		fmt.Sprintf("mode %s not supported", in.TargetMode))}
-}
-
 func ConvertUnitToBytes(nu string) (uint64, error) {
 	// normalize input
 	s := strings.ToLower(strings.TrimSpace(nu))
@@ -335,4 +320,50 @@ func ConvertUnitToBytes(nu string) (uint64, error) {
 	}
 
 	return 0, errors.New("invalid unit")
+}
+
+// validateTarget validates the target
+func (in *NetworkChaosSpec) validateTargetPodSelector(target *field.Path) field.ErrorList {
+	modes := []PodMode{OnePodMode, AllPodMode, FixedPodMode, FixedPercentPodMode, RandomMaxPercentPodMode}
+
+	for _, mode := range modes {
+		if in.Target.Mode == mode {
+			return validatePodSelector(in.Target.Value, in.Target.Mode, target.Child("value"))
+		}
+	}
+
+	return field.ErrorList{field.Invalid(target.Child("mode"), in.Target.Mode,
+		fmt.Sprintf("mode %s not supported", in.Target.Mode))}
+}
+
+// ValidateTargets validates externalTargets and Targets
+func (in *NetworkChaosSpec) validateTargets(target *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if in.Action == PartitionAction {
+		return nil
+	}
+
+	if (in.Direction == From || in.Direction == Both) &&
+		in.ExternalTargets != nil && in.Action != PartitionAction {
+		allErrs = append(allErrs,
+			field.Invalid(target.Child("direction"), in.Direction,
+				"external targets cannot be used with `from` and `both` direction in netem action yet"))
+	}
+
+	if (in.Direction == From || in.Direction == Both) && in.Target == nil {
+		if in.Action != PartitionAction {
+			allErrs = append(allErrs,
+				field.Invalid(target.Child("direction"), in.Direction,
+					"`from` and `both` direction cannot be used when targets is empty in netem action"))
+		} else if in.ExternalTargets == nil {
+			allErrs = append(allErrs,
+				field.Invalid(target.Child("direction"), in.Direction,
+					"`from` and `both` direction cannot be used when targets and external targets are both empty"))
+		}
+	}
+
+	// TODO: validate externalTargets are in ip or domain form
+
+	return allErrs
 }

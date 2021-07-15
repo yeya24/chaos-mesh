@@ -5,11 +5,8 @@ metadata:
   namespace: {{ .Release.Namespace | quote }}
   name: {{ .Values.controllerManager.serviceAccount }}
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 
 ---
 # roles
@@ -18,18 +15,24 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ .Release.Name }}-chaos-controller-manager-target-namespace
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 rules:
   - apiGroups: [ "" ]
-    resources: [ "endpoints" ]
-    verbs: [ "get", "list", "watch" ]
-  - apiGroups: [ "" ]
-    resources: [ "pods", "secrets" ]
-    verbs: [ "get", "list", "watch", "delete", "update" ]
+    resources: [ "pods", "secrets"]
+    verbs: [ "get", "list", "watch", "delete", "update", "patch" ]
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - "create"
+  - apiGroups:
+      - ""
+    resources:
+      - "pods/log"
+    verbs:
+      - "get"
   - apiGroups:
       - ""
     resources:
@@ -37,6 +40,9 @@ rules:
     verbs:
       - patch
       - create
+      - watch
+      - list
+      - get
   - apiGroups: [ "" ]
     resources: [ "configmaps" ]
     verbs: [ "*" ]
@@ -51,25 +57,22 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ .Release.Name }}-chaos-controller-manager-cluster-level
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 rules:
   - apiGroups: [ "" ]
     resources:
       - nodes
-{{- if .Values.clusterScoped }}
+      {{- if .Values.clusterScoped }}
       - namespaces
       - services
-{{- end }}
+    {{- end }}
     verbs: [ "get", "list", "watch" ]
   - apiGroups: [ "authorization.k8s.io" ]
     resources:
       - subjectaccessreviews
     verbs: [ "create" ]
-      
+
 
 ---
 kind: Role
@@ -78,14 +81,11 @@ metadata:
   name: {{ .Release.Name }}-chaos-controller-manager-control-plane
   namespace: {{ .Release.Namespace | quote }}
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 rules:
   - apiGroups: [ "" ]
-    resources: [ "configmaps", "services" ]
+    resources: [ "configmaps", "services", "endpoints" ]
     verbs: [ "get", "list", "watch" ]
   - apiGroups: [ "authorization.k8s.io" ]
     resources:
@@ -99,11 +99,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ .Release.Name }}-chaos-controller-manager-cluster-level
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -121,11 +118,8 @@ metadata:
   name: {{ .Release.Name }}-chaos-controller-manager-control-plane
   namespace: {{ .Release.Namespace | quote }}
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -136,21 +130,18 @@ subjects:
     namespace: {{ .Release.Namespace | quote }}
 
 ---
-{{- if .Values.clusterScoped }}
+  {{- if .Values.clusterScoped }}
 kind: ClusterRoleBinding
-{{- else }}
+  {{- else }}
 kind: RoleBinding
-{{- end }}
+  {{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ .Release.Name }}-chaos-controller-manager-target-namespace
   namespace: {{ .Values.controllerManager.targetNamespace | quote }}
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -159,4 +150,4 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Values.controllerManager.serviceAccount }}
     namespace: {{ .Release.Namespace | quote }}
-{{- end }}
+  {{- end }}

@@ -1,24 +1,28 @@
 import { Box, Button, Checkbox, Typography } from '@material-ui/core'
-import ConfirmDialog, { ConfirmDialogHandles } from 'components-mui/ConfirmDialog'
+import { Confirm, setAlert, setConfirm } from 'slices/globalStatus'
 import { FixedSizeList as RWList, ListChildComponentProps as RWListChildComponentProps } from 'react-window'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { Archive } from 'api/archives.type'
 import CloseIcon from '@material-ui/icons/Close'
 import DeleteOutlinedIcon from '@material-ui/icons/DeleteOutlined'
-import ExperimentListItem from 'components/ExperimentListItem'
 import FilterListIcon from '@material-ui/icons/FilterList'
 import Loading from 'components-mui/Loading'
 import NotFound from 'components-mui/NotFound'
+import ObjectListItem from 'components/ObjectListItem'
 import PlaylistAddCheckIcon from '@material-ui/icons/PlaylistAddCheck'
 import Space from 'components-mui/Space'
 import T from 'components/T'
+import Tab from '@material-ui/core/Tab'
+import TabContext from '@material-ui/lab/TabContext'
+import TabList from '@material-ui/lab/TabList'
 import _groupBy from 'lodash.groupby'
 import api from 'api'
-import { setAlert } from 'slices/globalStatus'
-import { styled } from '@material-ui/core/styles'
+import { styled } from '@material-ui/styles'
 import { transByKind } from 'lib/byKind'
+import { useHistory } from 'react-router-dom'
 import { useIntl } from 'react-intl'
+import { useQuery } from 'lib/hooks'
 import { useStoreDispatch } from 'store'
 
 const StyledCheckBox = styled(Checkbox)({
@@ -30,64 +34,98 @@ const StyledCheckBox = styled(Checkbox)({
   },
 })
 
-const initialSelected = {
-  uuid: '',
-  title: '',
-  description: '',
-  action: '',
-}
+type PanelType = 'workflow' | 'schedule' | 'experiment'
 
 export default function Archives() {
+  const history = useHistory()
   const intl = useIntl()
+  const query = useQuery()
+  let kind = query.get('kind') || 'experiment'
 
   const dispatch = useStoreDispatch()
 
+  const [panel, setPanel] = useState<PanelType>(kind as PanelType)
   const [loading, setLoading] = useState(true)
   const [archives, setArchives] = useState<Archive[]>([])
-  const [selected, setSelected] = useState(initialSelected)
   const [batch, setBatch] = useState<Record<uuid, boolean>>({})
   const batchLength = Object.keys(batch).length
   const isBatchEmpty = batchLength === 0
-  const confirmRef = useRef<ConfirmDialogHandles>(null)
 
-  const fetchArchives = () => {
-    api.archives
-      .archives()
-      .then(({ data }) => setArchives(data))
+  const fetchArchives = useCallback(() => {
+    let request
+    switch (kind) {
+      case 'workflow':
+        request = api.workflows.archives
+        break
+      case 'schedule':
+        request = api.schedules.archives
+        break
+      case 'experiment':
+      default:
+        request = api.archives.archives
+        break
+    }
+
+    request()
+      .then(({ data }) => {
+        setArchives(data)
+      })
       .catch(console.error)
       .finally(() => setLoading(false))
-  }
+  }, [kind])
 
-  useEffect(fetchArchives, [])
+  useEffect(fetchArchives, [fetchArchives])
 
-  const handleSelect = (selected: typeof initialSelected) => {
-    setSelected(selected)
+  const handleSelect = (selected: Confirm) => dispatch(setConfirm(selected))
+  const onSelect = (selected: Confirm) =>
+    dispatch(
+      setConfirm({
+        title: selected.title,
+        description: selected.description,
+        handle: handleAction(selected.action, selected.uuid),
+      })
+    )
 
-    confirmRef.current!.setOpen(true)
-  }
-
-  const handleAction = (action: string) => () => {
-    const { uuid } = selected
-
+  const handleAction = (action: string, uuid?: uuid) => () => {
     let actionFunc: any
     let arg: any
 
     switch (action) {
       case 'delete':
-        actionFunc = api.archives.del
+        switch (kind) {
+          case 'workflow':
+            actionFunc = api.workflows.delArchive
+            break
+          case 'schedule':
+            actionFunc = api.schedules.delArchive
+            break
+          case 'experiment':
+          default:
+            actionFunc = api.archives.del
+            break
+        }
         arg = uuid
 
         break
       case 'deleteMulti':
-        action = 'archive'
-        actionFunc = api.archives.delMulti
+        action = 'delete'
+        switch (kind) {
+          case 'workflow':
+            actionFunc = api.workflows.delArchives
+            break
+          case 'schedule':
+            actionFunc = api.schedules.delArchives
+            break
+          case 'experiment':
+          default:
+            actionFunc = api.archives.delMulti
+            break
+        }
         arg = Object.keys(batch)
         setBatch({})
 
         break
     }
-
-    confirmRef.current!.setOpen(false)
 
     if (actionFunc) {
       actionFunc(arg)
@@ -95,7 +133,7 @@ export default function Archives() {
           dispatch(
             setAlert({
               type: 'success',
-              message: intl.formatMessage({ id: `common.${action}Successfully` }),
+              message: T(`confirm.success.${action}`, intl),
             })
           )
 
@@ -120,10 +158,9 @@ export default function Archives() {
 
   const handleBatchDelete = () =>
     handleSelect({
-      uuid: '',
-      title: `${intl.formatMessage({ id: 'archives.deleteMulti' })}`,
-      description: intl.formatMessage({ id: 'archives.deleteDesc' }),
-      action: 'deleteMulti',
+      title: T('archives.deleteMulti', intl),
+      description: T('archives.deleteDesc', intl),
+      handle: handleAction('deleteMulti'),
     })
 
   const onCheckboxChange = (uuid: uuid) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -144,14 +181,27 @@ export default function Archives() {
         />
       )}
       <Box flex={1}>
-        <ExperimentListItem experiment={data[index]} isArchive onSelect={handleSelect} intl={intl} />
+        <ObjectListItem type="archive" archive={kind as any} data={data[index]} onSelect={onSelect} />
       </Box>
     </Box>
   )
 
+  const onTabChange = (_: any, newValue: PanelType) => {
+    history.push(`/archives?kind=${newValue}`)
+    setPanel(newValue)
+  }
+
   return (
-    <>
-      <Space mb={6}>
+    <TabContext value={panel}>
+      <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+        <TabList onChange={onTabChange}>
+          <Tab label={T('workflows.title')} value="workflow" />
+          <Tab label={T('schedules.title')} value="schedule" />
+          <Tab label={T('experiments.title')} value="experiment" />
+        </TabList>
+      </Box>
+
+      <Space direction="row" my={6}>
         <Button
           variant="outlined"
           startIcon={isBatchEmpty ? <FilterListIcon /> : <CloseIcon />}
@@ -190,18 +240,11 @@ export default function Archives() {
 
       {!loading && archives.length === 0 && (
         <NotFound illustrated textAlign="center">
-          <Typography>{T('archives.noArchivesFound')}</Typography>
+          <Typography>{T('archives.notFound')}</Typography>
         </NotFound>
       )}
 
       {loading && <Loading />}
-
-      <ConfirmDialog
-        ref={confirmRef}
-        title={selected.title}
-        description={selected.description}
-        onConfirm={handleAction(selected.action)}
-      />
-    </>
+    </TabContext>
   )
 }

@@ -44,59 +44,21 @@ func (in *{{.Type}}) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *{{.Type}}) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *{{.Type}}) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *{{.Type}}Spec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *{{.Type}}) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *{{.Type}}) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *{{.Type}}) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *{{.Type}}) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *{{.Type}}) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -107,8 +69,8 @@ func (in *{{.Type}}) GetChaos() *ChaosInstance {
 		Kind:      Kind{{.Type}},
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -160,9 +122,39 @@ func (in *{{.Type}}List) ListChaos() []*ChaosInstance {
 	}
 	return res
 }
+
+func (in *{{.Type}}) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *{{.Type}}) IsOneShot() bool {
+	{{if .OneShotExp}}
+	if {{.OneShotExp}} {
+		return true
+	}
+
+	return false
+	{{else}}
+	return false
+	{{end}}
+}
 `
 
-func generateImpl(name string) string {
+func generateImpl(name string, oneShotExp string) string {
 	tmpl, err := template.New("impl").Parse(implTemplate)
 	if err != nil {
 		log.Error(err, "fail to build template")
@@ -171,7 +163,8 @@ func generateImpl(name string) string {
 
 	buf := new(bytes.Buffer)
 	err = tmpl.Execute(buf, &metadata{
-		Type: name,
+		Type:       name,
+		OneShotExp: oneShotExp,
 	})
 	if err != nil {
 		log.Error(err, "fail to execute template")

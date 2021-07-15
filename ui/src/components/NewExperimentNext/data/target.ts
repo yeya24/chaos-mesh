@@ -118,6 +118,13 @@ const dnsCommon: Spec = {
     value: [],
     helperText: 'Specify the DNS patterns. For example, type google.com and then press space to add it.',
   },
+  container_names: {
+    field: 'label',
+    label: 'Affected container names',
+    value: [],
+    helperText:
+      "Optional. Type string and end with a space to generate the container names. If it's empty, all containers will be injected",
+  },
 }
 
 const awsCommon: Spec = {
@@ -138,6 +145,33 @@ const awsCommon: Spec = {
     label: 'EC2 instance',
     value: '',
     helperText: 'The ID of a EC2 instance',
+  },
+}
+
+const gcpCommon: Spec = {
+  secretName: {
+    field: 'text',
+    label: 'Secret name',
+    value: '',
+    helperText: 'Optional. The Kubernetes secret which includes GCP credentials',
+  },
+  project: {
+    field: 'text',
+    label: 'Project',
+    value: '',
+    helperText: 'The name of a GCP project',
+  },
+  zone: {
+    field: 'text',
+    label: 'Zone',
+    value: '',
+    helperText: 'The zone of a GCP project',
+  },
+  instance: {
+    field: 'text',
+    label: 'Instance',
+    value: '',
+    helperText: 'The name of a VM instance',
   },
 }
 
@@ -170,11 +204,11 @@ const data: Record<Kind, Target> = {
         key: 'container-kill',
         spec: {
           action: 'container-kill' as any,
-          container_name: {
-            field: 'text',
-            label: 'Container name',
-            value: '',
-            helperText: 'Fill the container name',
+          container_names: {
+            field: 'label',
+            label: 'Container names',
+            value: [],
+            helperText: 'Type string and end with a space to generate the container names.',
           },
         },
       },
@@ -318,7 +352,7 @@ const data: Record<Kind, Target> = {
     ],
   },
   // IO Injection
-  IoChaos: {
+  IOChaos: {
     categories: [
       {
         name: 'Latency',
@@ -443,8 +477,8 @@ const data: Record<Kind, Target> = {
       },
     ],
   },
-  // Aws
-  AwsChaos: {
+  // AWS
+  AWSChaos: {
     categories: [
       {
         name: 'Stop EC2',
@@ -484,7 +518,59 @@ const data: Record<Kind, Target> = {
       },
     ],
   },
+  // GCP
+  GCPChaos: {
+    categories: [
+      {
+        name: 'Stop node',
+        key: 'node-stop',
+        spec: {
+          action: 'node-stop' as any,
+          ...gcpCommon,
+        },
+      },
+      {
+        name: 'Reset node',
+        key: 'node-reset',
+        spec: {
+          action: 'node-reset' as any,
+          ...gcpCommon,
+        },
+      },
+      {
+        name: 'Loss disk',
+        key: 'disk-loss',
+        spec: {
+          action: 'disk-loss' as any,
+          ...gcpCommon,
+          deviceNames: {
+            field: 'label',
+            label: 'Device names',
+            value: [],
+            helperText: 'Type string and end with a space to generate the device names',
+          },
+        },
+      },
+    ],
+  },
 }
+
+const targetScopeSchema = Yup.object({
+  namespaces: Yup.array().min(1, 'The namespace selectors is required'),
+})
+
+const patternsSchema = Yup.array().of(Yup.string()).required('The patterns is required')
+
+const AwsChaosCommonSchema = Yup.object({
+  awsRegion: Yup.string().required('The region is required'),
+  ec2Instance: Yup.string().required('The ID of the EC2 instance is required'),
+})
+
+const GcpChaosCommonSchema = Yup.object({
+  project: Yup.string().required('The project is required'),
+  zone: Yup.string().required('The zone is required'),
+  instance: Yup.string().required('The instance is required'),
+})
 
 export const schema: Partial<Record<Kind, Record<string, Yup.ObjectSchema>>> = {
   PodChaos: {
@@ -492,58 +578,46 @@ export const schema: Partial<Record<Kind, Record<string, Yup.ObjectSchema>>> = {
       grace_period: Yup.number().min(0, 'Grace period must be non-negative integer'),
     }),
     'container-kill': Yup.object({
-      container_name: Yup.string().required('The container name is required'),
+      container_names: Yup.array().of(Yup.string()).required('The container name is required'),
     }),
   },
   NetworkChaos: {
     partition: Yup.object({
       direction: Yup.string().required('The direction is required'),
-      target_scope: Yup.object({
-        namespace_selectors: Yup.array().min(1, 'The namespace selectors is required'),
-      }),
+      target_scope: targetScopeSchema,
     }),
     loss: Yup.object({
       loss: Yup.object({
         loss: Yup.string().required('The loss is required'),
       }),
-      target_scope: Yup.object({
-        namespace_selectors: Yup.array().min(1, 'The namespace selectors is required'),
-      }),
+      target_scope: targetScopeSchema,
     }),
     delay: Yup.object({
       delay: Yup.object({
         latency: Yup.string().required('The latency is required'),
       }),
-      target_scope: Yup.object({
-        namespace_selectors: Yup.array().min(1, 'The namespace selectors is required'),
-      }),
+      target_scope: targetScopeSchema,
     }),
     duplicate: Yup.object({
       duplicate: Yup.object({
         duplicate: Yup.string().required('The duplicate is required'),
       }),
-      target_scope: Yup.object({
-        namespace_selectors: Yup.array().min(1, 'The namespace selectors is required'),
-      }),
+      target_scope: targetScopeSchema,
     }),
     corrupt: Yup.object({
       corrupt: Yup.object({
         corrupt: Yup.string().required('The corrupt is required'),
       }),
-      target_scope: Yup.object({
-        namespace_selectors: Yup.array().min(1, 'The namespace selectors is required'),
-      }),
+      target_scope: targetScopeSchema,
     }),
     bandwidth: Yup.object({
       bandwidth: Yup.object({
         rate: Yup.string().required('The rate of bandwidth is required'),
       }),
-      target_scope: Yup.object({
-        namespace_selectors: Yup.array().min(1, 'The namespace selectors is required'),
-      }),
+      target_scope: targetScopeSchema,
     }),
   },
-  IoChaos: {
+  IOChaos: {
     latency: Yup.object({
       delay: Yup.string().required('The delay is required'),
     }),
@@ -561,26 +635,25 @@ export const schema: Partial<Record<Kind, Record<string, Yup.ObjectSchema>>> = {
   },
   DNSChaos: {
     error: Yup.object({
-      patterns: Yup.array().of(Yup.string()).required('The patterns is required'),
+      patterns: patternsSchema,
     }),
     random: Yup.object({
-      patterns: Yup.array().of(Yup.string()).required('The patterns is required'),
+      patterns: patternsSchema,
     }),
   },
-  AwsChaos: {
-    'ec2-stop': Yup.object({
-      awsRegion: Yup.string().required('The region is required'),
-      ec2Instance: Yup.string().required('The ID of the EC2 instance is required'),
-    }),
-    'ec2-restart': Yup.object({
-      awsRegion: Yup.string().required('The region is required'),
-      ec2Instance: Yup.string().required('The ID of the EC2 instance is required'),
-    }),
-    'detach-volume': Yup.object({
-      awsRegion: Yup.string().required('The region is required'),
-      ec2Instance: Yup.string().required('The ID of the EC2 instance is required'),
+  AWSChaos: {
+    'ec2-stop': AwsChaosCommonSchema,
+    'ec2-restart': AwsChaosCommonSchema,
+    'detach-volume': AwsChaosCommonSchema.shape({
       deviceName: Yup.string().required('The device name is required'),
       volumeID: Yup.string().required('The ID of the EBS volume is required'),
+    }),
+  },
+  GCPChaos: {
+    'node-stop': GcpChaosCommonSchema,
+    'node-reset': GcpChaosCommonSchema,
+    'disk-loss': GcpChaosCommonSchema.shape({
+      deviceNames: Yup.array().of(Yup.string()).required('At least one device name is required'),
     }),
   },
 }

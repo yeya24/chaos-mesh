@@ -22,17 +22,23 @@ import (
 	authv1 "k8s.io/api/authorization/v1"
 	authorizationv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/chaos-mesh/chaos-mesh/api/v1alpha1"
+	"github.com/chaos-mesh/chaos-mesh/controllers/common"
 )
 
 var alwaysAllowedKind = []string{
 	v1alpha1.KindAwsChaos,
 	v1alpha1.KindPodNetworkChaos,
-	v1alpha1.KindPodIoChaos,
+	v1alpha1.KindPodIOChaos,
 	v1alpha1.KindGcpChaos,
+	v1alpha1.KindPodHttpChaos,
+
+	// TODO: check the auth for Schedule
+	// The resouce will be created by the SA of controller-manager, so checking the auth of Schedule is needed.
+	v1alpha1.KindSchedule,
+
 	"Workflow",
 	"WorkflowNode",
 }
@@ -44,8 +50,6 @@ var authLog = ctrl.Log.WithName("validate-auth")
 // AuthValidator validates the authority
 type AuthValidator struct {
 	enabled bool
-	client  client.Client
-	reader  client.Reader
 	authCli *authorizationv1.AuthorizationV1Client
 
 	decoder *admission.Decoder
@@ -56,12 +60,10 @@ type AuthValidator struct {
 }
 
 // NewAuthValidator returns a new AuthValidator
-func NewAuthValidator(enabled bool, client client.Client, reader client.Reader, authCli *authorizationv1.AuthorizationV1Client,
+func NewAuthValidator(enabled bool, authCli *authorizationv1.AuthorizationV1Client,
 	clusterScoped bool, targetNamespace string, enableFilterNamespace bool) *AuthValidator {
 	return &AuthValidator{
 		enabled:               enabled,
-		client:                client,
-		reader:                reader,
 		authCli:               authCli,
 		clusterScoped:         clusterScoped,
 		targetNamespace:       targetNamespace,
@@ -83,7 +85,12 @@ func (v *AuthValidator) Handle(ctx context.Context, req admission.Request) admis
 		return admission.Allowed(fmt.Sprintf("skip the RBAC check for type %s", requestKind))
 	}
 
-	chaos := v1alpha1.GetChaosValidator(requestKind)
+	kind, ok := v1alpha1.AllKinds()[requestKind]
+	if !ok {
+		err := fmt.Errorf("kind %s is not support", requestKind)
+		return admission.Errored(http.StatusBadRequest, err)
+	}
+	chaos := kind.Chaos.DeepCopyObject().(common.InnerObjectWithSelector)
 	if chaos == nil {
 		err := fmt.Errorf("kind %s is not support", requestKind)
 		return admission.Errored(http.StatusBadRequest, err)
@@ -93,17 +100,28 @@ func (v *AuthValidator) Handle(ctx context.Context, req admission.Request) admis
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	specs := chaos.GetSelectSpec()
+	specs := chaos.GetSelectorSpecs()
 
 	requireClusterPrivileges := false
 	affectedNamespaces := make(map[string]struct{})
 
 	for _, spec := range specs {
-		if spec.GetSelector().ClusterScoped() {
+		var selector *v1alpha1.PodSelector
+		if s, ok := spec.(*v1alpha1.ContainerSelector); ok {
+			selector = &s.PodSelector
+		}
+		if p, ok := spec.(*v1alpha1.PodSelector); ok {
+			selector = p
+		}
+		if selector == nil {
+			return admission.Allowed("")
+		}
+
+		if selector.Selector.ClusterScoped() {
 			requireClusterPrivileges = true
 		}
 
-		for _, namespace := range spec.GetSelector().AffectedNamespaces() {
+		for _, namespace := range selector.Selector.AffectedNamespaces() {
 			affectedNamespaces[namespace] = struct{}{}
 		}
 	}

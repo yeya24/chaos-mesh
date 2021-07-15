@@ -15,6 +15,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -34,11 +35,15 @@ func (in *DNSChaos) Default() {
 	dnschaoslog.Info("default", "name", in.Name)
 
 	in.Spec.Selector.DefaultNamespace(in.GetNamespace())
+	in.Spec.Default()
+}
+
+func (in *DNSChaosSpec) Default() {
 }
 
 // +kubebuilder:webhook:verbs=create;update,path=/validate-chaos-mesh-org-v1alpha1-dnschaos,mutating=false,failurePolicy=fail,groups=chaos-mesh.org,resources=dnschaos,versions=v1alpha1,name=vdnschaos.kb.io
 
-var _ ChaosValidator = &DNSChaos{}
+var _ webhook.Validator = &DNSChaos{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (in *DNSChaos) ValidateCreate() error {
@@ -49,6 +54,9 @@ func (in *DNSChaos) ValidateCreate() error {
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (in *DNSChaos) ValidateUpdate(old runtime.Object) error {
 	dnschaoslog.Info("validate update", "name", in.Name)
+	if !reflect.DeepEqual(in.Spec, old.(*DNSChaos).Spec) {
+		return ErrCanNotUpdateChaos
+	}
 	return in.Validate()
 }
 
@@ -62,10 +70,7 @@ func (in *DNSChaos) ValidateDelete() error {
 
 // Validate validates chaos object
 func (in *DNSChaos) Validate() error {
-	specField := field.NewPath("spec")
-	allErrs := in.ValidateScheduler(specField)
-	allErrs = append(allErrs, in.ValidatePodMode(specField)...)
-
+	allErrs := in.Spec.Validate()
 	if len(allErrs) > 0 {
 		return fmt.Errorf(allErrs.ToAggregate().Error())
 	}
@@ -73,17 +78,9 @@ func (in *DNSChaos) Validate() error {
 	return nil
 }
 
-// SelectSpec returns the selector config for authority validate
-func (in *DNSChaos) GetSelectSpec() []SelectSpec {
-	return []SelectSpec{&in.Spec}
-}
-
-// ValidateScheduler validates the scheduler and duration
-func (in *DNSChaos) ValidateScheduler(spec *field.Path) field.ErrorList {
-	return ValidateScheduler(in, spec)
-}
-
-// ValidatePodMode validates the value with podmode
-func (in *DNSChaos) ValidatePodMode(spec *field.Path) field.ErrorList {
-	return ValidatePodMode(in.Spec.Value, in.Spec.Mode, spec.Child("value"))
+func (in *DNSChaosSpec) Validate() field.ErrorList {
+	specField := field.NewPath("spec")
+	allErrs := validatePodSelector(in.PodSelector.Value, in.PodSelector.Mode, specField.Child("value"))
+	allErrs = append(allErrs, validateDuration(in, specField)...)
+	return allErrs
 }

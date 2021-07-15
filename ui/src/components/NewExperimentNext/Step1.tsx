@@ -1,14 +1,13 @@
-import { Box, Card, Divider, GridList, GridListTile, Typography, useMediaQuery, useTheme } from '@material-ui/core'
-import React, { useEffect, useState } from 'react'
+import { Box, Card, Divider, Typography } from '@material-ui/core'
 import { iconByKind, transByKind } from 'lib/byKind'
-import { setStep1, setTarget as setTargetToStore } from 'slices/experiments'
+import { setKindAction as setKindActionToStore, setStep1, setTarget as setTargetToStore } from 'slices/experiments'
 import targetData, { Kind, Target, schema } from './data/target'
+import { useEffect, useState } from 'react'
 import { useStoreDispatch, useStoreSelector } from 'store'
 
-import CheckCircleOutlineIcon from '@material-ui/icons/CheckCircleOutline'
+import CheckIcon from '@material-ui/icons/Check'
 import Kernel from './form/Kernel'
 import Paper from 'components-mui/Paper'
-import PaperTop from 'components-mui/PaperTop'
 import RadioButtonCheckedOutlinedIcon from '@material-ui/icons/RadioButtonCheckedOutlined'
 import RadioButtonUncheckedOutlinedIcon from '@material-ui/icons/RadioButtonUncheckedOutlined'
 import Stress from './form/Stress'
@@ -17,7 +16,7 @@ import TargetGenerated from './form/TargetGenerated'
 import UndoIcon from '@material-ui/icons/Undo'
 import _snakecase from 'lodash.snakecase'
 import clsx from 'clsx'
-import { makeStyles } from '@material-ui/core/styles'
+import { makeStyles } from '@material-ui/styles'
 
 const useStyles = makeStyles((theme) => {
   const cardActive = {
@@ -26,13 +25,10 @@ const useStyles = makeStyles((theme) => {
   }
 
   return {
-    gridList: {
-      flexWrap: 'nowrap',
-      // Promote the list into his own layer on Chrome. This cost memory but helps keeping high FPS.
-      transform: 'translateZ(0)',
-    },
     card: {
       cursor: 'pointer',
+      marginTop: theme.spacing(3),
+      marginRight: theme.spacing(3),
       '&:hover': cardActive,
     },
     cardActive,
@@ -51,8 +47,6 @@ const useStyles = makeStyles((theme) => {
 const submitDirectly = ['pod-failure']
 
 const Step1 = () => {
-  const theme = useTheme()
-  const isDesktopScreen = useMediaQuery(theme.breakpoints.down('md'))
   const classes = useStyles()
 
   const state = useStoreSelector((state) => state)
@@ -68,8 +62,7 @@ const Step1 = () => {
   const dispatch = useStoreDispatch()
 
   const [kindAction, setKindAction] = useState<[Kind | '', string]>([_kind, _action])
-  const kind = kindAction[0]
-  const action = kindAction[1]
+  const [kind, action] = kindAction
 
   useEffect(() => {
     setKindAction([_kind, _action])
@@ -77,18 +70,26 @@ const Step1 = () => {
 
   const handleSelectTarget = (key: Kind) => () => setKindAction([key, ''])
 
-  const handleSelectAction = (action: string) => () => {
-    if (submitDirectly.includes(action)) {
-      handleSubmitStep1(targetData[kind as Kind].categories!.filter(({ key }) => key === action)[0].spec)
-    }
+  const handleSelectAction = (newAction: string) => () => {
+    dispatch(setKindActionToStore([kind, newAction]))
 
-    setKindAction([kind, action])
+    if (submitDirectly.includes(newAction)) {
+      handleSubmitStep1({ action: newAction })
+    }
   }
 
   const handleSubmitStep1 = (values: Record<string, any>) => {
     const result = {
       kind,
-      [_snakecase(kind)]: values,
+      [_snakecase(kind)]:
+        submitDirectly.includes(values.action) && Object.keys(values).length === 1
+          ? values
+          : action
+          ? {
+              ...values,
+              action,
+            }
+          : values,
     }
 
     if (process.env.NODE_ENV === 'development') {
@@ -103,89 +104,84 @@ const Step1 = () => {
 
   return (
     <Paper className={step1 ? classes.submit : ''}>
-      <PaperTop
-        title={
-          <Box display="flex">
-            {step1 && (
-              <Box display="flex" alignItems="center" mr={3}>
-                <CheckCircleOutlineIcon className={classes.submitIcon} />
-              </Box>
-            )}
-            {T('newE.titleStep1')}
-          </Box>
-        }
-      >
-        {step1 && (
-          <Box display="flex" alignItems="center">
-            <UndoIcon className={classes.asButton} onClick={handleUndo} />
-          </Box>
-        )}
-      </PaperTop>
+      <Box display="flex" justifyContent="space-between" mb={step1 ? 0 : 3}>
+        <Box display="flex" alignItems="center">
+          {step1 && (
+            <Box display="flex" mr={3}>
+              <CheckIcon className={classes.submitIcon} />
+            </Box>
+          )}
+          <Typography>{T('newE.titleStep1')}</Typography>
+        </Box>
+        {step1 && <UndoIcon className={classes.asButton} onClick={handleUndo} />}
+      </Box>
       <Box hidden={step1}>
-        <Box p={3} overflow="hidden">
-          <GridList className={classes.gridList} cols={isDesktopScreen ? 1.5 : 3.5} spacing={9} cellHeight="auto">
-            {targetDataEntries.map(([key]) => (
-              <GridListTile key={key}>
-                <Card
-                  className={clsx(classes.card, kind === key ? classes.cardActive : '')}
-                  variant="outlined"
-                  onClick={handleSelectTarget(key)}
-                >
-                  <Box display="flex" justifyContent="center" alignItems="center" height="100px">
-                    <Box display="flex" justifyContent="center" flex={1}>
-                      {iconByKind(key)}
-                    </Box>
-                    <Box display="flex" justifyContent="center" flex={2} px={1.5} textAlign="center">
-                      <Typography variant="button">{transByKind(key)}</Typography>
-                    </Box>
-                  </Box>
-                </Card>
-              </GridListTile>
-            ))}
-          </GridList>
+        <Box display="flex" flexWrap="wrap">
+          {targetDataEntries.map(([key]) => (
+            <Card
+              key={key}
+              className={clsx(classes.card, kind === key ? classes.cardActive : '')}
+              variant="outlined"
+              onClick={handleSelectTarget(key)}
+            >
+              <Box display="flex" justifyContent="center" alignItems="center" width={280} height={75}>
+                <Box display="flex" justifyContent="center" flex={1}>
+                  {iconByKind(key)}
+                </Box>
+                <Box flex={1.5} textAlign="center">
+                  <Typography variant="button">{transByKind(key)}</Typography>
+                </Box>
+              </Box>
+            </Card>
+          ))}
         </Box>
         {kind && (
-          <Box p={3} overflow="hidden">
-            <Box mb={6}>
+          <Box overflow="hidden">
+            <Box mt={6} mb={3}>
               <Divider />
             </Box>
             {targetData[kind].categories ? (
-              <GridList className={classes.gridList} cols={isDesktopScreen ? 2.5 : 4.5} spacing={9} cellHeight="auto">
+              <Box display="flex" flexWrap="wrap">
                 {targetData[kind].categories!.map((d: any) => (
-                  <GridListTile key={d.key}>
-                    <Card
-                      className={clsx(classes.card, action === d.key ? classes.cardActive : '')}
-                      variant="outlined"
-                      onClick={handleSelectAction(d.key)}
-                    >
-                      <Box display="flex" justifyContent="center" alignItems="center" height="50px">
-                        <Box display="flex" justifyContent="center" alignItems="center" flex={1}>
-                          {action === d.key ? <RadioButtonCheckedOutlinedIcon /> : <RadioButtonUncheckedOutlinedIcon />}
-                        </Box>
-                        <Box display="flex" justifyContent="center" alignItems="center" flex={2} px={1.5}>
-                          <Typography variant="button">{d.name}</Typography>
-                        </Box>
+                  <Card
+                    key={d.key}
+                    className={clsx(classes.card, action === d.key ? classes.cardActive : '')}
+                    variant="outlined"
+                    onClick={handleSelectAction(d.key)}
+                  >
+                    <Box display="flex" justifyContent="center" alignItems="center" width={210} height={50}>
+                      <Box display="flex" justifyContent="center" alignItems="center" flex={0.5}>
+                        {action === d.key ? <RadioButtonCheckedOutlinedIcon /> : <RadioButtonUncheckedOutlinedIcon />}
                       </Box>
-                    </Card>
-                  </GridListTile>
+                      <Box flex={1.5} textAlign="center">
+                        <Typography variant="button">{d.name}</Typography>
+                      </Box>
+                    </Box>
+                  </Card>
                 ))}
-              </GridList>
+              </Box>
             ) : kind === 'KernelChaos' ? (
-              <Kernel onSubmit={handleSubmitStep1} />
+              <Box mt={6}>
+                <Kernel onSubmit={handleSubmitStep1} />
+              </Box>
             ) : kind === 'TimeChaos' ? (
-              <TargetGenerated
-                data={targetData[kind].spec!}
-                validationSchema={schema.TimeChaos!.default}
-                onSubmit={handleSubmitStep1}
-              />
+              <Box mt={6}>
+                <TargetGenerated
+                  data={targetData[kind].spec!}
+                  validationSchema={schema.TimeChaos!.default}
+                  onSubmit={handleSubmitStep1}
+                />
+              </Box>
             ) : kind === 'StressChaos' ? (
-              <Stress onSubmit={handleSubmitStep1} />
+              <Box mt={6}>
+                <Stress onSubmit={handleSubmitStep1} />
+              </Box>
             ) : null}
           </Box>
         )}
         {action && !submitDirectly.includes(action) && (
-          <Box p={3}>
-            <Box mb={6}>
+          <>
+            <Box my={6}>
               <Divider />
             </Box>
             <TargetGenerated
@@ -196,7 +192,7 @@ const Step1 = () => {
               validationSchema={schema[kind as Kind]![action]}
               onSubmit={handleSubmitStep1}
             />
-          </Box>
+          </>
         )}
       </Box>
     </Paper>

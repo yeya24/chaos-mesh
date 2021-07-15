@@ -15,7 +15,6 @@ package v1alpha1
 
 import (
 	"context"
-	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -58,10 +57,12 @@ var _ = Describe("GcpChaos", func() {
 					Namespace: "default",
 				},
 				Spec: GcpChaosSpec{
-					Action:     NodeReset,
-					Project:    testProject,
-					Zone:       testZone,
-					Instance:   testInstance,
+					Action: NodeReset,
+					GcpSelector: GcpSelector{
+						Project:  testProject,
+						Zone:     testZone,
+						Instance: testInstance,
+					},
 					SecretName: &testSecretName,
 				},
 			}
@@ -76,20 +77,6 @@ var _ = Describe("GcpChaos", func() {
 			By("deleting the created object")
 			Expect(k8sClient.Delete(context.TODO(), created)).To(Succeed())
 			Expect(k8sClient.Get(context.TODO(), key, created)).ToNot(Succeed())
-		})
-
-		It("should set next start time successfully", func() {
-			gcpchaos := &GcpChaos{}
-			nTime := time.Now()
-			gcpchaos.SetNextStart(nTime)
-			Expect(gcpchaos.GetNextStart()).To(Equal(nTime))
-		})
-
-		It("should set recover time successfully", func() {
-			gcpchaos := &GcpChaos{}
-			nTime := time.Now()
-			gcpchaos.SetNextRecover(nTime)
-			Expect(gcpchaos.GetNextRecover()).To(Equal(nTime))
 		})
 	})
 })

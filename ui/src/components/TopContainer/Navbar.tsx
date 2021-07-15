@@ -4,16 +4,14 @@ import MenuIcon from '@material-ui/icons/Menu'
 import MenuOpenIcon from '@material-ui/icons/MenuOpen'
 import Namespace from './Namespace'
 import { NavigationBreadCrumbProps } from 'slices/navigation'
-import React from 'react'
 import Search from 'components/Search'
 import Space from 'components-mui/Space'
 import T from 'components/T'
-import { makeStyles } from '@material-ui/core/styles'
+import { makeStyles } from '@material-ui/styles'
 
 const useStyles = makeStyles((theme) => ({
   toolbar: {
-    margin: theme.spacing(6),
-    marginBottom: 0,
+    marginBottom: theme.spacing(6),
   },
   appBar: {
     position: 'absolute',
@@ -21,27 +19,17 @@ const useStyles = makeStyles((theme) => ({
     margin: theme.spacing(6),
   },
   menuButton: {
-    [theme.breakpoints.down('sm')]: {
+    [theme.breakpoints.down('md')]: {
       display: 'none',
     },
   },
   nav: {
     color: 'inherit',
-    [theme.breakpoints.down('xs')]: {
-      display: 'none',
-    },
-  },
-  navRight: {
-    display: 'flex',
-    alignItems: 'center',
-    [theme.breakpoints.down('xs')]: {
-      width: '100%',
-    },
   },
 }))
 
 function hasLocalBreadcrumb(b: string) {
-  return ['dashboard', 'newExperiment', 'experiments', 'events', 'archives', 'settings', 'swagger'].includes(b)
+  return ['dashboard', 'workflows', 'schedules', 'experiments', 'events', 'archives', 'settings'].includes(b)
 }
 
 interface HeaderProps {
@@ -71,13 +59,21 @@ const Navbar: React.FC<HeaderProps> = ({ openDrawer, handleDrawerToggle, breadcr
           </IconButton>
           <Box display="flex" justifyContent="space-between" alignItems="center" width="100%">
             {b && (
-              <Breadcrumbs className={classes.nav}>
+              <Breadcrumbs className={classes.nav} aria-label="breadcrumb">
                 <Typography variant="h6" component="h2">
-                  {hasLocalBreadcrumb(b.name) ? T(`${b.name === 'newExperiment' ? 'newE' : b.name}.title`) : b.name}
+                  {hasLocalBreadcrumb(b.name)
+                    ? T(
+                        `${
+                          breadcrumbs[1] && breadcrumbs[1].name === 'new'
+                            ? 'new' + b.name.charAt(0).toUpperCase()
+                            : b.name
+                        }.title`
+                      )
+                    : b.name}
                 </Typography>
               </Breadcrumbs>
             )}
-            <Space className={classes.navRight}>
+            <Space direction="row">
               <Search />
               <Namespace />
             </Space>

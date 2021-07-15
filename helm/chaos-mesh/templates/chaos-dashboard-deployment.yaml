@@ -5,26 +5,22 @@ metadata:
   namespace: {{ .Release.Namespace | quote }}
   name: chaos-dashboard
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: chaos-dashboard
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 spec:
   replicas: {{ .Values.dashboard.replicaCount }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "chaos-mesh.selectors" . | nindent 6 }}
       app.kubernetes.io/component: chaos-dashboard
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "chaos-mesh.labels" . | nindent 8 }}
         app.kubernetes.io/component: chaos-dashboard
-    {{- with .Values.dashboard.podAnnotations }}
       annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+    {{- with .Values.dashboard.podAnnotations }}
 {{ toYaml . | indent 8 }}
     {{- end }}
     spec:
@@ -32,9 +28,12 @@ spec:
       hostNetwork: true
       {{- end }}
       {{- if .Values.dashboard.serviceAccount }}
-      serviceAccount: {{ .Values.dashboard.serviceAccount }}
+      serviceAccountName: {{ .Values.dashboard.serviceAccount }}
       {{- end }}
       priorityClassName: {{ .Values.dashboard.priorityClassName}}
+      {{- if .Values.chaosDlv.enable }}
+      shareProcessNamespace: true
+      {{- end }}
       containers:
         - name: chaos-dashboard
           image: {{template "registry-prefix" .}}{{ .Values.dashboard.image }}
@@ -69,6 +68,21 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.dashboard.env.LISTEN_PORT }}
+        {{- if .Values.chaosDlv.enable }}
+        - name: chaos-mesh-dlv
+          image: {{template "registry-prefix" .}}{{ .Values.chaosDlv.image }}
+          imagePullPolicy: {{ .Values.chaosDlv.imagePullPolicy | default "IfNotPresent" }}
+          env:
+            - name: CMD_NAME
+              value: chaos-dashboard
+          securityContext:
+            capabilities:
+              add:
+              - SYS_PTRACE
+          ports:
+          - name: dlv
+            containerPort: 8000
+        {{- end }}
         {{- with .Values.dashboard.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
@@ -122,4 +136,10 @@ spec:
 {{- if and .Values.dashboard.service.nodePort (eq .Values.dashboard.service.type "NodePort") }}
       nodePort: {{ .Values.dashboard.service.nodePort }}
 {{- end }}
+  {{- if .Values.chaosDlv.enable }}
+    - port: 8000
+      targetPort: dlv
+      protocol: TCP
+      name: dlv
+  {{- end }}
 {{- end }}

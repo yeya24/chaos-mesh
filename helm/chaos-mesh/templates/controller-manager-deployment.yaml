@@ -4,23 +4,18 @@ metadata:
   namespace: {{ .Release.Namespace | quote }}
   name: chaos-controller-manager
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 spec:
   replicas: {{ .Values.controllerManager.replicaCount }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "chaos-mesh.selectors" . | nindent 6 }}
       app.kubernetes.io/component: controller-manager
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "chaos-mesh.labels" . | nindent 8 }}
         app.kubernetes.io/component: controller-manager
       annotations:
         rollme: {{ randAlphaNum 5 | quote }}
@@ -32,9 +27,12 @@ spec:
       hostNetwork: true
     {{- end }}
     {{- if .Values.controllerManager.serviceAccount }}
-      serviceAccount: {{ .Values.controllerManager.serviceAccount }}
+      serviceAccountName: {{ .Values.controllerManager.serviceAccount }}
     {{- end }}
       priorityClassName: {{ .Values.controllerManager.priorityClassName}}
+      {{- if .Values.chaosDlv.enable }}
+      shareProcessNamespace: true
+      {{- end }}
       containers:
       - name: chaos-mesh
         image: {{template "registry-prefix" .}}{{ .Values.controllerManager.image }}
@@ -60,7 +58,7 @@ spec:
             value: "{{ .Values.clusterScoped }}"
           - name: TZ
             value: {{ .Values.timezone | default "UTC" }}
-          - name: CHAOS_DAEMON_PORT
+          - name: CHAOS_DAEMON_SERVICE_PORT
             value: !!str {{ .Values.chaosDaemon.grpcPort }}
           - name: BPFKI_PORT
             value: !!str {{ .Values.bpfki.grpcPort }}
@@ -87,6 +85,14 @@ spec:
             value: /etc/chaos-daemon/cert/tls.key
           - name: CHAOS_MESH_CA_CERT
             value: /etc/chaos-daemon/cert/ca.crt
+          - name: QPS
+            value: "30"
+          - name: BURST
+            value: "50"
+          {{- end }}
+          {{- if .Values.controllerManager.podChaos.podFailure.pauseImage }}
+          - name: POD_FAILURE_PAUSE_IMAGE
+            value: {{ .Values.controllerManager.podChaos.podFailure.pauseImage }}
           {{- end }}
         volumeMounts:
           - name: webhook-certs
@@ -106,6 +112,21 @@ spec:
           - name: pprof
             containerPort: 10081
         {{- end }}
+      {{- if .Values.chaosDlv.enable }}
+      - name: chaos-mesh-dlv
+        image: {{template "registry-prefix" .}}{{ .Values.chaosDlv.image }}
+        imagePullPolicy: {{ .Values.chaosDlv.imagePullPolicy | default "IfNotPresent" }}
+        env:
+          - name: CMD_NAME
+            value: chaos-controller-manager
+        securityContext:
+          capabilities:
+            add:
+            - SYS_PTRACE
+        ports:
+        - name: dlv
+          containerPort: 8000
+      {{- end }}
       volumes:
         - name: webhook-certs
           secret:

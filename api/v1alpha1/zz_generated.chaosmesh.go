@@ -1,4 +1,4 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,59 +36,21 @@ func (in *AwsChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *AwsChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *AwsChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *AwsChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *AwsChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *AwsChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *AwsChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *AwsChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *AwsChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -99,8 +61,8 @@ func (in *AwsChaos) GetChaos() *ChaosInstance {
 		Kind:      KindAwsChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -153,6 +115,34 @@ func (in *AwsChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *AwsChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *AwsChaos) IsOneShot() bool {
+	
+	if in.Spec.Action==Ec2Restart {
+		return true
+	}
+
+	return false
+	
+}
+
 const KindDNSChaos = "DNSChaos"
 
 // IsDeleted returns whether this resource has been deleted
@@ -168,59 +158,21 @@ func (in *DNSChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *DNSChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *DNSChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *DNSChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *DNSChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *DNSChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *DNSChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *DNSChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *DNSChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -231,8 +183,8 @@ func (in *DNSChaos) GetChaos() *ChaosInstance {
 		Kind:      KindDNSChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -285,6 +237,30 @@ func (in *DNSChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *DNSChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *DNSChaos) IsOneShot() bool {
+	
+	return false
+	
+}
+
 const KindGcpChaos = "GcpChaos"
 
 // IsDeleted returns whether this resource has been deleted
@@ -300,59 +276,21 @@ func (in *GcpChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *GcpChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *GcpChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *GcpChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *GcpChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *GcpChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *GcpChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *GcpChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *GcpChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -363,8 +301,8 @@ func (in *GcpChaos) GetChaos() *ChaosInstance {
 		Kind:      KindGcpChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -417,6 +355,34 @@ func (in *GcpChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *GcpChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *GcpChaos) IsOneShot() bool {
+	
+	if in.Spec.Action==NodeReset {
+		return true
+	}
+
+	return false
+	
+}
+
 const KindHTTPChaos = "HTTPChaos"
 
 // IsDeleted returns whether this resource has been deleted
@@ -432,59 +398,21 @@ func (in *HTTPChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *HTTPChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *HTTPChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *HTTPChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *HTTPChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *HTTPChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *HTTPChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *HTTPChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *HTTPChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -495,8 +423,8 @@ func (in *HTTPChaos) GetChaos() *ChaosInstance {
 		Kind:      KindHTTPChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -549,86 +477,72 @@ func (in *HTTPChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
-const KindIoChaos = "IoChaos"
+func (in *HTTPChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *HTTPChaos) IsOneShot() bool {
+	
+	return false
+	
+}
+
+const KindIOChaos = "IOChaos"
 
 // IsDeleted returns whether this resource has been deleted
-func (in *IoChaos) IsDeleted() bool {
+func (in *IOChaos) IsDeleted() bool {
 	return !in.DeletionTimestamp.IsZero()
 }
 
 // IsPaused returns whether this resource has been paused
-func (in *IoChaos) IsPaused() bool {
+func (in *IOChaos) IsPaused() bool {
 	if in.Annotations == nil || in.Annotations[PauseAnnotationKey] != "true" {
 		return false
 	}
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *IOChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *IoChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *IOChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
 }
 
-func (in *IoChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *IoChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *IoChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *IoChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *IoChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
-}
-
 // GetChaos would return the a record for chaos
-func (in *IoChaos) GetChaos() *ChaosInstance {
+func (in *IOChaos) GetChaos() *ChaosInstance {
 	instance := &ChaosInstance{
 		Name:      in.Name,
 		Namespace: in.Namespace,
-		Kind:      KindIoChaos,
+		Kind:      KindIOChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -645,12 +559,12 @@ func (in *IoChaos) GetChaos() *ChaosInstance {
 }
 
 // GetStatus returns the status
-func (in *IoChaos) GetStatus() *ChaosStatus {
+func (in *IOChaos) GetStatus() *ChaosStatus {
 	return &in.Status.ChaosStatus
 }
 
 // GetSpecAndMetaString returns a string including the meta and spec field of this chaos object.
-func (in *IoChaos) GetSpecAndMetaString() (string, error) {
+func (in *IOChaos) GetSpecAndMetaString() (string, error) {
 	spec, err := json.Marshal(in.Spec)
 	if err != nil {
 		return "", err
@@ -665,20 +579,44 @@ func (in *IoChaos) GetSpecAndMetaString() (string, error) {
 
 // +kubebuilder:object:root=true
 
-// IoChaosList contains a list of IoChaos
-type IoChaosList struct {
+// IOChaosList contains a list of IOChaos
+type IOChaosList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []IoChaos `json:"items"`
+	Items           []IOChaos `json:"items"`
 }
 
 // ListChaos returns a list of chaos
-func (in *IoChaosList) ListChaos() []*ChaosInstance {
+func (in *IOChaosList) ListChaos() []*ChaosInstance {
 	res := make([]*ChaosInstance, 0, len(in.Items))
 	for _, item := range in.Items {
 		res = append(res, item.GetChaos())
 	}
 	return res
+}
+
+func (in *IOChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *IOChaos) IsOneShot() bool {
+	
+	return false
+	
 }
 
 const KindJVMChaos = "JVMChaos"
@@ -696,59 +634,21 @@ func (in *JVMChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *JVMChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *JVMChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *JVMChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *JVMChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *JVMChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *JVMChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *JVMChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *JVMChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -759,8 +659,8 @@ func (in *JVMChaos) GetChaos() *ChaosInstance {
 		Kind:      KindJVMChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -813,6 +713,30 @@ func (in *JVMChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *JVMChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *JVMChaos) IsOneShot() bool {
+	
+	return false
+	
+}
+
 const KindKernelChaos = "KernelChaos"
 
 // IsDeleted returns whether this resource has been deleted
@@ -828,59 +752,21 @@ func (in *KernelChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *KernelChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *KernelChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *KernelChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *KernelChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *KernelChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *KernelChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *KernelChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *KernelChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -891,8 +777,8 @@ func (in *KernelChaos) GetChaos() *ChaosInstance {
 		Kind:      KindKernelChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -945,6 +831,30 @@ func (in *KernelChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *KernelChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *KernelChaos) IsOneShot() bool {
+	
+	return false
+	
+}
+
 const KindNetworkChaos = "NetworkChaos"
 
 // IsDeleted returns whether this resource has been deleted
@@ -960,59 +870,21 @@ func (in *NetworkChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *NetworkChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *NetworkChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *NetworkChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *NetworkChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *NetworkChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *NetworkChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *NetworkChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *NetworkChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -1023,8 +895,8 @@ func (in *NetworkChaos) GetChaos() *ChaosInstance {
 		Kind:      KindNetworkChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -1077,6 +949,30 @@ func (in *NetworkChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *NetworkChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *NetworkChaos) IsOneShot() bool {
+	
+	return false
+	
+}
+
 const KindPodChaos = "PodChaos"
 
 // IsDeleted returns whether this resource has been deleted
@@ -1092,59 +988,21 @@ func (in *PodChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *PodChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *PodChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *PodChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *PodChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *PodChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *PodChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *PodChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *PodChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -1155,8 +1013,8 @@ func (in *PodChaos) GetChaos() *ChaosInstance {
 		Kind:      KindPodChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -1209,6 +1067,34 @@ func (in *PodChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *PodChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *PodChaos) IsOneShot() bool {
+	
+	if in.Spec.Action==PodKillAction || in.Spec.Action==ContainerKillAction {
+		return true
+	}
+
+	return false
+	
+}
+
 const KindStressChaos = "StressChaos"
 
 // IsDeleted returns whether this resource has been deleted
@@ -1224,59 +1110,21 @@ func (in *StressChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *StressChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *StressChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *StressChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *StressChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *StressChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *StressChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *StressChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *StressChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -1287,8 +1135,8 @@ func (in *StressChaos) GetChaos() *ChaosInstance {
 		Kind:      KindStressChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -1341,6 +1189,30 @@ func (in *StressChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *StressChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *StressChaos) IsOneShot() bool {
+	
+	return false
+	
+}
+
 const KindTimeChaos = "TimeChaos"
 
 // IsDeleted returns whether this resource has been deleted
@@ -1356,59 +1228,21 @@ func (in *TimeChaos) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *TimeChaos) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *TimeChaos) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *TimeChaosSpec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(*in.Duration)
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
-}
-
-func (in *TimeChaos) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *TimeChaos) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *TimeChaos) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *TimeChaos) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *TimeChaos) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
 }
 
 // GetChaos would return the a record for chaos
@@ -1419,8 +1253,8 @@ func (in *TimeChaos) GetChaos() *ChaosInstance {
 		Kind:      KindTimeChaos,
 		StartTime: in.CreationTimestamp.Time,
 		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
 		UID:       string(in.UID),
+		Status:    in.Status.ChaosStatus,
 	}
 
 	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
@@ -1473,6 +1307,30 @@ func (in *TimeChaosList) ListChaos() []*ChaosInstance {
 	return res
 }
 
+func (in *TimeChaos) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *TimeChaos) IsOneShot() bool {
+	
+	return false
+	
+}
+
 func init() {
 
 	SchemeBuilder.Register(&AwsChaos{}, &AwsChaosList{})
@@ -1499,10 +1357,10 @@ func init() {
 		ChaosList: &HTTPChaosList{},
 	})
 
-	SchemeBuilder.Register(&IoChaos{}, &IoChaosList{})
-	all.register(KindIoChaos, &ChaosKind{
-		Chaos:     &IoChaos{},
-		ChaosList: &IoChaosList{},
+	SchemeBuilder.Register(&IOChaos{}, &IOChaosList{})
+	all.register(KindIOChaos, &ChaosKind{
+		Chaos:     &IOChaos{},
+		ChaosList: &IOChaosList{},
 	})
 
 	SchemeBuilder.Register(&JVMChaos{}, &JVMChaosList{})
@@ -1541,46 +1399,65 @@ func init() {
 		ChaosList: &TimeChaosList{},
 	})
 
-}
 
-// GetChaosValidator returns chaos object by kind
-func GetChaosValidator(chaosKind string) ChaosValidator {
-	switch chaosKind {
+	allScheduleItem.register(KindAwsChaos, &ChaosKind{
+		Chaos:     &AwsChaos{},
+		ChaosList: &AwsChaosList{},
+	})
 
-	case KindAwsChaos:
-		return &AwsChaos{}
+	allScheduleItem.register(KindDNSChaos, &ChaosKind{
+		Chaos:     &DNSChaos{},
+		ChaosList: &DNSChaosList{},
+	})
 
-	case KindDNSChaos:
-		return &DNSChaos{}
+	allScheduleItem.register(KindGcpChaos, &ChaosKind{
+		Chaos:     &GcpChaos{},
+		ChaosList: &GcpChaosList{},
+	})
 
-	case KindGcpChaos:
-		return &GcpChaos{}
+	allScheduleItem.register(KindHTTPChaos, &ChaosKind{
+		Chaos:     &HTTPChaos{},
+		ChaosList: &HTTPChaosList{},
+	})
 
-	case KindHTTPChaos:
-		return &HTTPChaos{}
+	allScheduleItem.register(KindIOChaos, &ChaosKind{
+		Chaos:     &IOChaos{},
+		ChaosList: &IOChaosList{},
+	})
 
-	case KindIoChaos:
-		return &IoChaos{}
+	allScheduleItem.register(KindJVMChaos, &ChaosKind{
+		Chaos:     &JVMChaos{},
+		ChaosList: &JVMChaosList{},
+	})
 
-	case KindJVMChaos:
-		return &JVMChaos{}
+	allScheduleItem.register(KindKernelChaos, &ChaosKind{
+		Chaos:     &KernelChaos{},
+		ChaosList: &KernelChaosList{},
+	})
 
-	case KindKernelChaos:
-		return &KernelChaos{}
+	allScheduleItem.register(KindNetworkChaos, &ChaosKind{
+		Chaos:     &NetworkChaos{},
+		ChaosList: &NetworkChaosList{},
+	})
 
-	case KindNetworkChaos:
-		return &NetworkChaos{}
+	allScheduleItem.register(KindPodChaos, &ChaosKind{
+		Chaos:     &PodChaos{},
+		ChaosList: &PodChaosList{},
+	})
 
-	case KindPodChaos:
-		return &PodChaos{}
+	allScheduleItem.register(KindStressChaos, &ChaosKind{
+		Chaos:     &StressChaos{},
+		ChaosList: &StressChaosList{},
+	})
 
-	case KindStressChaos:
-		return &StressChaos{}
+	allScheduleItem.register(KindTimeChaos, &ChaosKind{
+		Chaos:     &TimeChaos{},
+		ChaosList: &TimeChaosList{},
+	})
 
-	case KindTimeChaos:
-		return &TimeChaos{}
+	allScheduleItem.register(KindWorkflow, &ChaosKind{
+		Chaos:     &Workflow{},
+		ChaosList: &WorkflowList{},
+	})
 
-	default:
-		return nil
-	}
 }

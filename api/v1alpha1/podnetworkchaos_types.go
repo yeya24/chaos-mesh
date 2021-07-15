@@ -24,6 +24,7 @@ import (
 const KindPodNetworkChaos = "PodNetworkChaos"
 
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 
 // PodNetworkChaos is the Schema for the PodNetworkChaos API
 type PodNetworkChaos struct {
@@ -82,7 +83,9 @@ type RawIptables struct {
 	Name string `json:"name"`
 
 	// The name of related ipset
-	IPSets []string `json:"ipsets"`
+	// +optional
+	// +nullable
+	IPSets []string `json:"ipsets,omitempty"`
 
 	// The block direction of this iptables rule
 	Direction ChainDirection `json:"direction"`
@@ -146,7 +149,9 @@ type RawRuleSource struct {
 
 // PodNetworkChaosStatus defines the observed state of PodNetworkChaos
 type PodNetworkChaosStatus struct {
-	ChaosStatus `json:",inline"`
+	FailedMessage string `json:"failedMessage,omitempty"`
+
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -156,38 +161,6 @@ type PodNetworkChaosList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []PodNetworkChaos `json:"items"`
-}
-
-// GetStatus returns the status of chaos
-func (in *PodNetworkChaos) GetStatus() *ChaosStatus {
-	return &in.Status.ChaosStatus
-}
-
-// GetChaos returns a chaos instance
-func (in *PodNetworkChaos) GetChaos() *ChaosInstance {
-	instance := &ChaosInstance{
-		Name:      in.Name,
-		Namespace: in.Namespace,
-		Kind:      "NetworkChaos",
-		StartTime: in.CreationTimestamp.Time,
-		Status:    string(in.GetStatus().Experiment.Phase),
-	}
-	if in.DeletionTimestamp != nil {
-		instance.EndTime = in.DeletionTimestamp.Time
-	}
-	return instance
-}
-
-// ListChaos returns a list of network chaos
-func (in *PodNetworkChaosList) ListChaos() []*ChaosInstance {
-	if len(in.Items) == 0 {
-		return nil
-	}
-	res := make([]*ChaosInstance, 0, len(in.Items))
-	for _, item := range in.Items {
-		res = append(res, item.GetChaos())
-	}
-	return res
 }
 
 func init() {

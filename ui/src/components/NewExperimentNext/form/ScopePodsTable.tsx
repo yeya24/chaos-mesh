@@ -1,10 +1,10 @@
 import { Checkbox, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@material-ui/core'
-import React, { useMemo } from 'react'
 import { getIn, useFormikContext } from 'formik'
 
 import PaperContainer from 'components-mui/PaperContainer'
 import T from 'components/T'
 import { setAlert } from 'slices/globalStatus'
+import { useMemo } from 'react'
 import { useStoreDispatch } from 'store'
 
 interface ScopePodsTableProps {
@@ -62,10 +62,10 @@ const ScopePodsTable: React.FC<ScopePodsTableProps> = ({ scope = 'scope', pods }
         <TableHead>
           <TableRow>
             <TableCell />
-            <TableCell>{T('newE.scope.podsTable.name')}</TableCell>
-            <TableCell>{T('newE.scope.podsTable.namespace')}</TableCell>
-            <TableCell>{T('newE.scope.podsTable.ip')}</TableCell>
-            <TableCell>{T('newE.scope.podsTable.state')}</TableCell>
+            <TableCell>{T('common.name')}</TableCell>
+            <TableCell>{T('k8s.namespace')}</TableCell>
+            <TableCell>{T('common.ip')}</TableCell>
+            <TableCell>{T('common.status')}</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>

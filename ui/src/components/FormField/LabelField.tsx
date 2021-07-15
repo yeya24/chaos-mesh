@@ -1,8 +1,7 @@
-import { Box, Chip, TextField, TextFieldProps } from '@material-ui/core'
-import React, { useEffect, useState } from 'react'
+import { Autocomplete, Chip, TextField, TextFieldProps } from '@material-ui/core'
 import { getIn, useFormikContext } from 'formik'
+import { useEffect, useState } from 'react'
 
-import Autocomplete from '@material-ui/lab/Autocomplete'
 import T from 'components/T'
 
 interface LabelFieldProps {
@@ -82,42 +81,39 @@ const LabelField: React.FC<LabelFieldProps & TextFieldProps> = ({ isKV = false, 
   const onDelete = (val: string) => () => setLabels(labels.filter((d: string) => d !== val))
 
   return (
-    <Box mb={3}>
-      <Autocomplete
-        multiple
-        options={labels}
-        value={labels}
-        open={false} // make popup always closed
-        forcePopupIcon={false}
-        onChange={onChange}
-        inputValue={text}
-        renderTags={(value: string[], getTagProps) =>
-          value.map((val: string, index: number) => (
-            <Chip
-              {...getTagProps({ index })}
-              style={{ height: 24 }}
-              label={val}
-              color="primary"
-              onDelete={onDelete(val)}
-            />
-          ))
-        }
-        renderInput={(params) => (
-          <TextField
-            {...params}
-            {...props}
-            variant="outlined"
-            margin="dense"
-            fullWidth
-            helperText={error !== '' ? error : isKV ? T('common.isKVHelperText') : props.helperText}
-            onChange={onInputChange}
-            onKeyDown={onKeyDown}
-            onBlur={processText}
-            error={error !== ''}
+    <Autocomplete
+      multiple
+      options={labels}
+      value={labels}
+      open={false} // make popup always closed
+      forcePopupIcon={false}
+      onChange={onChange}
+      inputValue={text}
+      renderTags={(value: string[], getTagProps) =>
+        value.map((val: string, index: number) => (
+          <Chip
+            {...getTagProps({ index })}
+            style={{ height: 24 }}
+            label={val}
+            color="primary"
+            onDelete={onDelete(val)}
           />
-        )}
-      />
-    </Box>
+        ))
+      }
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          {...props}
+          size="small"
+          fullWidth
+          helperText={error !== '' ? error : isKV ? T('common.isKVHelperText') : props.helperText}
+          error={error !== ''}
+          onChange={onInputChange}
+          onKeyDown={onKeyDown}
+          onBlur={processText}
+        />
+      )}
+    />
   )
 }
 

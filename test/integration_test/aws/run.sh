@@ -20,9 +20,11 @@ cd $cur
 
 # wait localstash pod status to running
 for ((k=0; k<30; k++)); do
-    not_run_num=`kubectl get pods -l app.kubernetes.io/name=localstack --no-headers | grep -v Running | wc -l`
 
-    if [ $not_run_num == 0 ]; then
+    JSONPATH='{range .items[*]}{@.metadata.name}:{range @.status.conditions[*]}{@.type}={@.status};{end}{"\n"}{end}'
+    not_ready_num=`kubectl get pods -l app.kubernetes.io/name=localstack --no-headers -o jsonpath="$JSONPATH" | grep "Ready=False" | wc -l`
+
+    if [ $not_ready_num == 0 ]; then
         break
     fi
 
@@ -30,6 +32,8 @@ for ((k=0; k<30; k++)); do
 done
 
 kubectl port-forward svc/localstack 4566:4566 &
+# kill child process
+trap 'kill $(jobs -p)' EXIT
 
 NODE_PORT=$(kubectl get --namespace default -o jsonpath="{.spec.ports[0].nodePort}" services localstack)
 NODE_IP=$(kubectl get nodes --namespace default -o jsonpath="{.items[0].status.addresses[0].address}")
@@ -82,5 +86,3 @@ fi
 # clean
 kubectl delete -f aws_chaos.yaml
 helm uninstall localstack
-# kill child process
-trap 'kill $(jobs -p)' EXIT

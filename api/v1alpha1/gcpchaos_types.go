@@ -14,11 +14,14 @@
 package v1alpha1
 
 import (
+	"encoding/json"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // +kubebuilder:object:root=true
 // +chaos-mesh:base
+// +chaos-mesh:oneshot=in.Spec.Action==NodeReset
 
 // GcpChaos is the Schema for the gcpchaos API
 type GcpChaos struct {
@@ -53,14 +56,14 @@ type GcpChaosSpec struct {
 	// +optional
 	Duration *string `json:"duration,omitempty"`
 
-	// Scheduler defines some schedule rules to control the running time of the chaos experiment about time.
-	// +optional
-	Scheduler *SchedulerSpec `json:"scheduler,omitempty"`
-
 	// SecretName defines the name of kubernetes secret. It is used for GCP credentials.
 	// +optional
 	SecretName *string `json:"secretName,omitempty"`
 
+	GcpSelector `json:",inline"`
+}
+
+type GcpSelector struct {
 	// Project defines the name of gcp project.
 	Project string `json:"project"`
 
@@ -70,17 +73,35 @@ type GcpChaosSpec struct {
 	// Instance defines the name of the instance
 	Instance string `json:"instance"`
 
-	// The device name of the disk to detach.
+	// The device name of disks to detach.
 	// Needed in disk-loss.
 	// +optional
-	DeviceName *string `json:"deviceName,omitempty"`
+	DeviceNames *[]string `json:"deviceNames,omitempty"`
+}
+
+func (obj *GcpChaos) GetSelectorSpecs() map[string]interface{} {
+	return map[string]interface{}{
+		".": &obj.Spec.GcpSelector,
+	}
+}
+
+func (selector *GcpSelector) Id() string {
+	// TODO: handle the error here
+	// or ignore it is enough ?
+	json, _ := json.Marshal(selector)
+
+	return string(json)
 }
 
 // GcpChaosStatus represents the status of a GcpChaos
 type GcpChaosStatus struct {
 	ChaosStatus `json:",inline"`
 
-	// The attached disk info string.
+	// The attached disk info strings.
 	// Needed in disk-loss.
-	AttachedDiskString string `json:"attachedDiskString,omitempty"`
+	AttachedDisksStrings []string `json:"attachedDiskStrings,omitempty"`
+}
+
+func (obj *GcpChaos) GetCustomStatus() interface{} {
+	return &obj.Status.AttachedDisksStrings
 }

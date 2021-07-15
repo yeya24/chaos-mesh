@@ -34,9 +34,14 @@ type TLSConfig struct {
 // ChaosControllerConfig defines the configuration for Chaos Controller
 type ChaosControllerConfig struct {
 	// ChaosDaemonPort is the port which grpc server listens on
-	ChaosDaemonPort int `envconfig:"CHAOS_DAEMON_PORT" default:"31767"`
+	ChaosDaemonPort int `envconfig:"CHAOS_DAEMON_SERVICE_PORT" default:"31767"`
 
 	TLSConfig
+
+	// The QPS config for kubernetes client
+	QPS float32 `envconfig:"QPS" default:"30"`
+	// The Burst config for kubernetes client
+	Burst int `envconfig:"BURST" default:"50"`
 
 	// BPFKIPort is the port which BFFKI grpc server listens on
 	BPFKIPort int `envconfig:"BPFKI_PORT" default:"50051"`
@@ -73,6 +78,9 @@ type ChaosControllerConfig struct {
 
 	// AllowHostNetworkTesting removes the restriction on chaos testing pods with `hostNetwork` set to true
 	AllowHostNetworkTesting bool `envconfig:"ALLOW_HOST_NETWORK_TESTING" default:"false"`
+
+	// PodFailurePauseImage is used to set a custom image for pod failure
+	PodFailurePauseImage string `envconfig:"POD_FAILURE_PAUSE_IMAGE" default:"gcr.io/google-containers/pause:latest"`
 }
 
 // EnvironChaosController returns the settings from the environment.

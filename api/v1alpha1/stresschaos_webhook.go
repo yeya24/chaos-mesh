@@ -16,6 +16,7 @@ package v1alpha1
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 
 	"github.com/docker/go-units"
@@ -45,11 +46,16 @@ var _ webhook.Defaulter = &StressChaos{}
 func (in *StressChaos) Default() {
 	stressChaosLog.Info("default", "name", in.Name)
 	in.Spec.Selector.DefaultNamespace(in.GetNamespace())
+	in.Spec.Default()
+}
+
+func (in *StressChaosSpec) Default() {
+
 }
 
 // +kubebuilder:webhook:verbs=create;update,path=/validate-chaos-mesh-org-v1alpha1-stresschaos,mutating=false,failurePolicy=fail,groups=chaos-mesh.org,resources=stresschaos,versions=v1alpha1,name=vstresschaos.kb.io
 
-var _ ChaosValidator = &StressChaos{}
+var _ webhook.Validator = &StressChaos{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (in *StressChaos) ValidateCreate() error {
@@ -60,6 +66,9 @@ func (in *StressChaos) ValidateCreate() error {
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (in *StressChaos) ValidateUpdate(old runtime.Object) error {
 	stressChaosLog.Info("validate update", "name", in.Name)
+	if !reflect.DeepEqual(in.Spec, old.(*StressChaos).Spec) {
+		return ErrCanNotUpdateChaos
+	}
 	return in.Validate()
 }
 
@@ -73,41 +82,25 @@ func (in *StressChaos) ValidateDelete() error {
 
 // Validate validates chaos object
 func (in *StressChaos) Validate() error {
-	root := field.NewPath("stresschaos")
-	errs := in.Spec.Validate(root)
-	errs = append(errs, in.ValidatePodMode(root)...)
-	errs = append(errs, in.ValidateScheduler(root.Child("spec"))...)
+	errs := in.Spec.Validate()
 	if len(errs) > 0 {
 		return fmt.Errorf(errs.ToAggregate().Error())
 	}
 	return nil
 }
 
-// ValidatePodMode validates the value with podmode
-func (in *StressChaos) ValidatePodMode(spec *field.Path) field.ErrorList {
-	return ValidatePodMode(in.Spec.Value, in.Spec.Mode, spec.Child("value"))
-}
-
-// ValidateScheduler validates whether scheduler is well defined
-func (in *StressChaos) ValidateScheduler(spec *field.Path) field.ErrorList {
-	return ValidateScheduler(in, spec)
-}
-
-// SelectSpec returns the selector config for authority validate
-func (in *StressChaos) GetSelectSpec() []SelectSpec {
-	return []SelectSpec{&in.Spec}
-}
-
 // Validate validates the scheduler and duration
-func (in *StressChaosSpec) Validate(parent *field.Path) field.ErrorList {
+func (in *StressChaosSpec) Validate() field.ErrorList {
 	errs := field.ErrorList{}
-	current := parent.Child("spec")
+	specField := field.NewPath("spec")
+	var allErrs field.ErrorList
 	if len(in.StressngStressors) == 0 && in.Stressors == nil {
-		errs = append(errs, field.Invalid(current, in, "missing stressors"))
+		allErrs = append(errs, field.Invalid(specField, in, "missing stressors"))
 	} else if in.Stressors != nil {
-		errs = append(errs, in.Stressors.Validate(current)...)
+		allErrs = append(errs, in.Stressors.Validate(specField)...)
 	}
-	return errs
+	allErrs = append(allErrs, validateDuration(in, specField)...)
+	return allErrs
 }
 
 // Validate validates whether the Stressors are all well defined

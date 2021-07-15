@@ -1,4 +1,4 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ const (
 	TypeDNSChaos TemplateType = "DNSChaos"
 	TypeGcpChaos TemplateType = "GcpChaos"
 	TypeHTTPChaos TemplateType = "HTTPChaos"
-	TypeIoChaos TemplateType = "IoChaos"
+	TypeIOChaos TemplateType = "IOChaos"
 	TypeJVMChaos TemplateType = "JVMChaos"
 	TypeKernelChaos TemplateType = "KernelChaos"
 	TypeNetworkChaos TemplateType = "NetworkChaos"
@@ -37,11 +37,12 @@ const (
 )
 
 var allChaosTemplateType = []TemplateType{
+	TypeSchedule,
 	TypeAwsChaos,
 	TypeDNSChaos,
 	TypeGcpChaos,
 	TypeHTTPChaos,
-	TypeIoChaos,
+	TypeIOChaos,
 	TypeJVMChaos,
 	TypeKernelChaos,
 	TypeNetworkChaos,
@@ -53,27 +54,27 @@ var allChaosTemplateType = []TemplateType{
 
 type EmbedChaos struct {
 	// +optional
-	AwsChaos *AwsChaosSpec `json:"aws_chaos,omitempty"`
+	AwsChaos *AwsChaosSpec `json:"awsChaos,omitempty"`
 	// +optional
-	DNSChaos *DNSChaosSpec `json:"dns_chaos,omitempty"`
+	DNSChaos *DNSChaosSpec `json:"dnsChaos,omitempty"`
 	// +optional
-	GcpChaos *GcpChaosSpec `json:"gcp_chaos,omitempty"`
+	GcpChaos *GcpChaosSpec `json:"gcpChaos,omitempty"`
 	// +optional
-	HTTPChaos *HTTPChaosSpec `json:"http_chaos,omitempty"`
+	HTTPChaos *HTTPChaosSpec `json:"httpChaos,omitempty"`
 	// +optional
-	IoChaos *IoChaosSpec `json:"io_chaos,omitempty"`
+	IOChaos *IOChaosSpec `json:"ioChaos,omitempty"`
 	// +optional
-	JVMChaos *JVMChaosSpec `json:"jvm_chaos,omitempty"`
+	JVMChaos *JVMChaosSpec `json:"jvmChaos,omitempty"`
 	// +optional
-	KernelChaos *KernelChaosSpec `json:"kernel_chaos,omitempty"`
+	KernelChaos *KernelChaosSpec `json:"kernelChaos,omitempty"`
 	// +optional
-	NetworkChaos *NetworkChaosSpec `json:"network_chaos,omitempty"`
+	NetworkChaos *NetworkChaosSpec `json:"networkChaos,omitempty"`
 	// +optional
-	PodChaos *PodChaosSpec `json:"pod_chaos,omitempty"`
+	PodChaos *PodChaosSpec `json:"podChaos,omitempty"`
 	// +optional
-	StressChaos *StressChaosSpec `json:"stress_chaos,omitempty"`
+	StressChaos *StressChaosSpec `json:"stressChaos,omitempty"`
 	// +optional
-	TimeChaos *TimeChaosSpec `json:"time_chaos,omitempty"`
+	TimeChaos *TimeChaosSpec `json:"timeChaos,omitempty"`
 
 }
 
@@ -96,9 +97,9 @@ func (it *EmbedChaos) SpawnNewObject(templateType TemplateType) (runtime.Object,
 		result := HTTPChaos{}
 		result.Spec = *it.HTTPChaos
 		return &result, result.GetObjectMeta(), nil
-	case TypeIoChaos:
-		result := IoChaos{}
-		result.Spec = *it.IoChaos
+	case TypeIOChaos:
+		result := IOChaos{}
+		result.Spec = *it.IOChaos
 		return &result, result.GetObjectMeta(), nil
 	case TypeJVMChaos:
 		result := JVMChaos{}
@@ -131,3 +132,137 @@ func (it *EmbedChaos) SpawnNewObject(templateType TemplateType) (runtime.Object,
 
 	return nil, &metav1.ObjectMeta{}, nil
 }
+
+func (it *EmbedChaos) SpawnNewList(templateType TemplateType) (GenericChaosList, error) {
+
+	switch templateType {
+	case TypeAwsChaos:
+		result := AwsChaosList{}
+		return &result, nil
+	case TypeDNSChaos:
+		result := DNSChaosList{}
+		return &result, nil
+	case TypeGcpChaos:
+		result := GcpChaosList{}
+		return &result, nil
+	case TypeHTTPChaos:
+		result := HTTPChaosList{}
+		return &result, nil
+	case TypeIOChaos:
+		result := IOChaosList{}
+		return &result, nil
+	case TypeJVMChaos:
+		result := JVMChaosList{}
+		return &result, nil
+	case TypeKernelChaos:
+		result := KernelChaosList{}
+		return &result, nil
+	case TypeNetworkChaos:
+		result := NetworkChaosList{}
+		return &result, nil
+	case TypePodChaos:
+		result := PodChaosList{}
+		return &result, nil
+	case TypeStressChaos:
+		result := StressChaosList{}
+		return &result, nil
+	case TypeTimeChaos:
+		result := TimeChaosList{}
+		return &result, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported template type %s", templateType)
+	}
+
+	return nil, nil
+}
+
+func (in *AwsChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *DNSChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *GcpChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *HTTPChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *IOChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *JVMChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *KernelChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *NetworkChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *PodChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *StressChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+func (in *TimeChaosList) GetItems() []GenericChaos {
+	var result []GenericChaos
+	for _, item := range in.Items {
+		item := item
+		result = append(result, &item)
+	}
+	return result
+}
+

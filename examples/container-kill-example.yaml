@@ -6,9 +6,8 @@ metadata:
 spec:
   action: container-kill
   mode: one
-  containerName: "prometheus"
   selector:
     labelSelectors:
-      "app.kubernetes.io/component": "monitor"
-  scheduler:
-    cron: "@every 30s"
+      app.kubernetes.io/component: monitor
+  containerNames:
+  - prometheus

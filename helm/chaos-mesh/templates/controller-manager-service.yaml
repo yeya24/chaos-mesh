@@ -4,28 +4,31 @@ metadata:
   namespace: {{ .Release.Namespace | quote }}
   name: {{ template "chaos-mesh.svc" . }}
   labels:
-    app.kubernetes.io/name: {{ template "chaos-mesh.name" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chaos-mesh.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+"  "_" }}
 spec:
   type: {{ .Values.controllerManager.service.type }}
   ports:
+    - port: 443
+      targetPort: webhook
+      protocol: TCP
+      name: webhook
   {{- if .Values.enableProfiling }}
     - port: 10081
       targetPort: pprof
       protocol: TCP
       name: pprof
   {{- end }}
+  {{- if .Values.chaosDlv.enable }}
+    - port: 8000
+      targetPort: dlv
+      protocol: TCP
+      name: dlv
+  {{- end }}
     - port: 10080
       targetPort: http
       protocol: TCP
       name: http
-    - port: 443
-      targetPort: webhook
-      protocol: TCP
-      name: webhook
   selector:
+    {{- include "chaos-mesh.selectors" . | nindent 4 }}
     app.kubernetes.io/component: controller-manager
-    app.kubernetes.io/instance: {{ .Release.Name }}

@@ -1,26 +1,26 @@
 import { Box, Button, Checkbox, Typography } from '@material-ui/core'
-import ConfirmDialog, { ConfirmDialogHandles } from 'components-mui/ConfirmDialog'
+import { Confirm, setAlert, setConfirm } from 'slices/globalStatus'
 import { FixedSizeList as RWList, ListChildComponentProps as RWListChildComponentProps } from 'react-window'
-import { useEffect, useRef, useState } from 'react'
 
 import AddIcon from '@material-ui/icons/Add'
+import ArchiveOutlinedIcon from '@material-ui/icons/ArchiveOutlined'
 import CloseIcon from '@material-ui/icons/Close'
-import DeleteOutlinedIcon from '@material-ui/icons/DeleteOutlined'
 import { Experiment } from 'api/experiments.type'
-import ExperimentListItem from 'components/ExperimentListItem'
 import FilterListIcon from '@material-ui/icons/FilterList'
 import Loading from 'components-mui/Loading'
 import NotFound from 'components-mui/NotFound'
+import ObjectListItem from 'components/ObjectListItem'
 import PlaylistAddCheckIcon from '@material-ui/icons/PlaylistAddCheck'
 import Space from 'components-mui/Space'
 import T from 'components/T'
 import _groupBy from 'lodash.groupby'
 import api from 'api'
-import { setAlert } from 'slices/globalStatus'
-import { styled } from '@material-ui/core/styles'
+import { styled } from '@material-ui/styles'
 import { transByKind } from 'lib/byKind'
 import { useHistory } from 'react-router-dom'
+import { useIntervalFetch } from 'lib/hooks'
 import { useIntl } from 'react-intl'
+import { useState } from 'react'
 import { useStoreDispatch } from 'store'
 
 const StyledCheckBox = styled(Checkbox)({
@@ -32,13 +32,6 @@ const StyledCheckBox = styled(Checkbox)({
   },
 })
 
-const initialSelected = {
-  uuid: '',
-  title: '',
-  description: '',
-  action: '',
-}
-
 export default function Experiments() {
   const intl = useIntl()
   const history = useHistory()
@@ -47,31 +40,37 @@ export default function Experiments() {
 
   const [loading, setLoading] = useState(true)
   const [experiments, setExperiments] = useState<Experiment[]>([])
-  const [selected, setSelected] = useState(initialSelected)
   const [batch, setBatch] = useState<Record<uuid, boolean>>({})
   const batchLength = Object.keys(batch).length
   const isBatchEmpty = batchLength === 0
-  const confirmRef = useRef<ConfirmDialogHandles>(null)
 
-  const fetchExperiments = () => {
+  const fetchExperiments = (intervalID?: number) => {
     api.experiments
       .experiments()
-      .then(({ data }) => setExperiments(data))
+      .then(({ data }) => {
+        setExperiments(data)
+
+        if (data.every((d) => d.status === 'finished')) {
+          clearInterval(intervalID)
+        }
+      })
       .catch(console.error)
       .finally(() => setLoading(false))
   }
 
-  useEffect(fetchExperiments, [])
+  useIntervalFetch(fetchExperiments)
 
-  const handleSelect = (selected: typeof initialSelected) => {
-    setSelected(selected)
+  const handleSelect = (selected: Confirm) => dispatch(setConfirm(selected))
+  const onSelect = (selected: Confirm) =>
+    dispatch(
+      setConfirm({
+        title: selected.title,
+        description: selected.description,
+        handle: handleAction(selected.action, selected.uuid),
+      })
+    )
 
-    confirmRef.current!.setOpen(true)
-  }
-
-  const handleAction = (action: string) => () => {
-    const { uuid } = selected
-
+  const handleAction = (action: string, uuid?: uuid) => () => {
     let actionFunc: any
     let arg: any
 
@@ -100,15 +99,13 @@ export default function Experiments() {
         break
     }
 
-    confirmRef.current!.setOpen(false)
-
     if (actionFunc) {
       actionFunc(arg)
         .then(() => {
           dispatch(
             setAlert({
               type: 'success',
-              message: intl.formatMessage({ id: `common.${action}Successfully` }),
+              message: T(`confirm.success.${action}`, intl),
             })
           )
 
@@ -133,10 +130,9 @@ export default function Experiments() {
 
   const handleBatchDelete = () =>
     handleSelect({
-      uuid: '',
-      title: `${intl.formatMessage({ id: 'experiments.deleteMulti' })}`,
-      description: intl.formatMessage({ id: 'experiments.deleteDesc' }),
-      action: 'archiveMulti',
+      title: T('experiments.deleteMulti', intl),
+      description: T('experiments.deleteDesc', intl),
+      handle: handleAction('archiveMulti'),
     })
 
   const onCheckboxChange = (uuid: uuid) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -157,15 +153,15 @@ export default function Experiments() {
         />
       )}
       <Box flex={1}>
-        <ExperimentListItem experiment={data[index]} onSelect={handleSelect} intl={intl} />
+        <ObjectListItem data={data[index]} onSelect={onSelect} />
       </Box>
     </Box>
   )
 
   return (
     <>
-      <Space mb={6}>
-        <Button variant="outlined" startIcon={<AddIcon />} onClick={() => history.push('/newExperiment')}>
+      <Space direction="row" mb={6}>
+        <Button variant="outlined" startIcon={<AddIcon />} onClick={() => history.push('/experiments/new')}>
           {T('newE.title')}
         </Button>
         <Button
@@ -181,8 +177,13 @@ export default function Experiments() {
             <Button variant="outlined" startIcon={<PlaylistAddCheckIcon />} onClick={handleBatchSelectAll}>
               {T('common.selectAll')}
             </Button>
-            <Button variant="outlined" color="secondary" startIcon={<DeleteOutlinedIcon />} onClick={handleBatchDelete}>
-              {T('common.delete')}
+            <Button
+              variant="outlined"
+              color="secondary"
+              startIcon={<ArchiveOutlinedIcon />}
+              onClick={handleBatchDelete}
+            >
+              {T('archives.single')}
             </Button>
           </>
         )}
@@ -206,18 +207,11 @@ export default function Experiments() {
 
       {!loading && experiments.length === 0 && (
         <NotFound illustrated textAlign="center">
-          <Typography>{T('experiments.noExperimentsFound')}</Typography>
+          <Typography>{T('experiments.notFound')}</Typography>
         </NotFound>
       )}
 
       {loading && <Loading />}
-
-      <ConfirmDialog
-        ref={confirmRef}
-        title={selected.title}
-        description={selected.description}
-        onConfirm={handleAction(selected.action)}
-      />
     </>
   )
 }

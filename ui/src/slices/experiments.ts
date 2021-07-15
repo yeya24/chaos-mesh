@@ -2,6 +2,7 @@ import { PayloadAction, createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 
 import { ExperimentScope } from 'components/NewExperiment/types'
 import { Kind } from 'components/NewExperimentNext/data/target'
+import { ScheduleSpecific } from 'components/Schedule/types'
 import api from 'api'
 
 export const getNamespaces = createAsyncThunk(
@@ -37,6 +38,7 @@ const initialState: {
   kindAction: [Kind | '', string]
   target: any
   basic: any
+  scheduleSpecific: ScheduleSpecific
 } = {
   namespaces: [],
   labels: {},
@@ -50,6 +52,7 @@ const initialState: {
   kindAction: ['', ''],
   target: {},
   basic: {},
+  scheduleSpecific: {} as any,
 }
 
 const experimentsSlice = createSlice({
@@ -83,12 +86,17 @@ const experimentsSlice = createSlice({
       state.basic = basic
     },
     resetNewExperiment(state) {
+      state.pods = []
+      state.networkTargetPods = []
       state.fromExternal = false
       state.step1 = false
       state.step2 = false
       state.kindAction = ['', '']
       state.target = {}
       state.basic = {}
+    },
+    setScheduleSpecific(state, action: PayloadAction<ScheduleSpecific>) {
+      state.scheduleSpecific = action.payload
     },
   },
   extraReducers: (builder) => {
@@ -119,6 +127,7 @@ export const {
   setBasic,
   setExternalExperiment,
   resetNewExperiment,
+  setScheduleSpecific,
 } = experimentsSlice.actions
 
 export default experimentsSlice.reducer

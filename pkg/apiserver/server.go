@@ -15,18 +15,18 @@ package apiserver
 
 import (
 	"fmt"
+	"net"
 	"net/http"
-
-	"go.uber.org/fx"
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
+	"go.uber.org/fx"
 
 	apiutils "github.com/chaos-mesh/chaos-mesh/pkg/apiserver/utils"
 	"github.com/chaos-mesh/chaos-mesh/pkg/apivalidator"
-	"github.com/chaos-mesh/chaos-mesh/pkg/config"
+	config "github.com/chaos-mesh/chaos-mesh/pkg/config/dashboard"
 	"github.com/chaos-mesh/chaos-mesh/pkg/swaggerserver"
 	"github.com/chaos-mesh/chaos-mesh/pkg/uiserver"
 )
@@ -44,12 +44,12 @@ var (
 )
 
 func serverRegister(r *gin.Engine, conf *config.ChaosDashboardConfig) {
-	listenAddr := fmt.Sprintf("%s:%d", conf.ListenHost, conf.ListenPort)
+	listenAddr := net.JoinHostPort(conf.ListenHost, fmt.Sprintf("%d", conf.ListenPort))
 
 	go r.Run(listenAddr)
 }
 
-func newEngine() *gin.Engine {
+func newEngine(config *config.ChaosDashboardConfig) *gin.Engine {
 	r := gin.Default()
 
 	// default is "/debug/pprof/"
@@ -70,20 +70,31 @@ func newEngine() *gin.Engine {
 		v.RegisterValidation("RequiredFieldEqual", apivalidator.RequiredFieldEqualValid, true)
 	}
 
-	moveToUIRoot := func(c *gin.Context) {
-		c.Redirect(http.StatusMovedPermanently, "/dashboard")
-	}
-
-	r.GET("/", moveToUIRoot)
 	ui := uiserver.AssetsFS()
 	if ui != nil {
-		newDashboardRouter(r, ui)
+		r.GET("/", func(c *gin.Context) {
+			c.FileFromFS("/", ui)
+		})
+		// `/:foo/*bar` from https://en.wikipedia.org/wiki/Foobar, the name itself has no meaning.
+		//
+		// This handle just internally redirects all no-exact routes to the root directory of static files because the UI is a single page application and only has one entry (index.html).
+		r.GET("/:foo", func(c *gin.Context) {
+			c.FileFromFS("/", ui)
+		})
+		r.GET("/:foo/*bar", func(c *gin.Context) {
+			c.FileFromFS("/", ui)
+		})
+
+		renderStatic := func(c *gin.Context) {
+			c.FileFromFS(c.Request.URL.Path, ui)
+		}
+		r.GET("/static/*any", renderStatic)
+		r.GET("/favicon.ico", renderStatic)
 	} else {
-		r.GET("/dashboard", func(c *gin.Context) {
+		r.GET("/", func(c *gin.Context) {
 			c.String(http.StatusOK, "Dashboard UI is not built. Please run `UI=1 make`.")
 		})
 	}
-	r.NoRoute(moveToUIRoot)
 
 	return r
 }
@@ -95,16 +106,4 @@ func newAPIRouter(r *gin.Engine) *gin.RouterGroup {
 	}
 
 	return api
-}
-
-func newDashboardRouter(r *gin.Engine, ui http.FileSystem) {
-	renderRequest := func(c *gin.Context) {
-		c.FileFromFS(c.Request.URL.Path, ui)
-	}
-
-	r.GET("/dashboard/*any", func(c *gin.Context) {
-		c.FileFromFS("/", ui)
-	})
-	r.GET("/static/*any", renderRequest)
-	r.GET("/favicon.ico", renderRequest)
 }

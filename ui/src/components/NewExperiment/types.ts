@@ -7,11 +7,11 @@ export interface ExperimentBasic {
 
 export interface ExperimentTargetPod {
   action: 'pod-failure' | 'pod-kill' | 'container-kill'
-  container_name?: string
+  container_names?: string[]
 }
 
 export interface ExperimentScope {
-  namespace_selectors: string[]
+  namespaces: string[]
   label_selectors: object | string[]
   annotation_selectors: object | string[]
   phase_selectors: string[]
@@ -115,12 +115,13 @@ export interface ExperimentTargetStress {
 export type ExperimentKind =
   | 'PodChaos'
   | 'NetworkChaos'
-  | 'IoChaos'
+  | 'IOChaos'
   | 'KernelChaos'
   | 'TimeChaos'
   | 'StressChaos'
   | 'DNSChaos'
-  | 'AwsChaos'
+  | 'AWSChaos'
+  | 'GCPChaos'
 
 export interface ExperimentTarget {
   kind: ExperimentKind
@@ -133,7 +134,6 @@ export interface ExperimentTarget {
 }
 
 export interface ExperimentSchedule {
-  cron: string
   duration: string
 }
 
