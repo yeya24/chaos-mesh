@@ -3,188 +3,121 @@
 
 <img src="../static/logo.svg" width="450" alt="Chaos Mesh Logo" />
 
-# Dashboard
+# UI
 
-A Web UI for Chaos Mesh. Powered by ⚛️ [Create React App](https://github.com/facebook/create-react-app).
+The Chaos Mesh dashboard UI, built with React and Vite.
 
 - [How to develop](#how-to-develop)
   - [Main technologies](#main-technologies)
   - [Bootstrap](#bootstrap)
-    - [Global env](#global-env)
+    - [Prepare](#prepare)
     - [Install deps](#install-deps)
     - [Start](#start)
-  - [Structure](#structure)
-  - [The rules we followed](#the-rules-we-followed)
-    - [TS or JS](#ts-or-js)
-    - [Styles](#styles)
-    - [Be Compact](#be-compact)
+  - [Packages](#packages)
 - [License](#license)
 
 ## How to develop
 
-The following content can help you understand how to develop dashboard and its overall structure.
+The following content can help you understand the overall structure of UI and how to develop it.
 
 ### Main technologies
 
 <div style="display: flex; align-items: center;">
-<a href="https://www.typescriptlang.org/">
-  <img src="https://upload.wikimedia.org/wikipedia/commons/4/4c/Typescript_logo_2020.svg" height="45" alt="TypeScript" />
-</a>
-<a href="https://reactjs.org/">
-  <img src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" height="45" alt="React" />
-</a>
-<a href="https://redux.js.org/">
-  <img src="https://redux.js.org/img/redux.svg" height="45" alt="Redux" />
-</a>
-<a href="https://material-ui.com/" style="margin-left: 15px;">
-  <img src="https://material-ui.com/static/logo_raw.svg" height="45" alt="Material UI" />
-</a>
+  <a href="https://www.typescriptlang.org/">
+    <img src="https://cdn.worldvectorlogo.com/logos/typescript.svg" height="45" alt="TypeScript" />
+  </a>
+  <a href="https://reactjs.org/" style="margin-left: 15px;">
+    <img src="https://cdn.worldvectorlogo.com/logos/react-2.svg" height="50" alt="React" />
+  </a>
+  <a href="https://mui.com/" style="margin-left: 15px;">
+    <img src="https://cdn.worldvectorlogo.com/logos/material-ui-1.svg" height="35" alt="Material UI" />
+  </a>
 </div>
+
+The UI uses TypeScript, React, Vite, and Material UI. TanStack Query manages API queries, and Zustand manages shared UI state.
+
+Also, we use monorepo to manage the whole UI codebase. Here is the general structure:
+
+```sh
+ui
+├── app
+│   ├── src
+│   │   ├── @types
+│   │   ├── api
+│   │   ├── components
+│   │   ├── i18n
+│   │   ├── images
+│   │   ├── lib
+│   │   ├── pages - place all landing pages
+│   │   ├── formik - generated form data
+│   │   ├── openapi - generated API client and schemas
+│   │   ├── zustand - shared UI state
+├── packages
+```
+
+One is **app**, which describe the whole UI interface, and the other is **packages**, which provide more complete and independent functionalities for app use.
 
 ### Bootstrap
 
-#### Global env
+#### Prepare
 
-If you haven't installed the nodejs and golang environment, checkout [https://nodejs.org/en/download/](https://nodejs.org/en/download/) and [https://golang.org/](https://golang.org/).
+CI uses Node.js 24 and pnpm 12. Go is needed only if you run the dashboard API server from source.
 
-And also, we use [Yarn 1](https://classic.yarnpkg.com/en/) as the dependency management. Maybe we will migrate to Yarn 2 in the future, but not now.
+And we use [pnpm](https://pnpm.io/) as the dependency management. Please also install it.
 
 #### Install deps
 
-If you just cloned a fresh Chaos Mesh repo, into the `ui` folder, run:
+Into the `ui` folder, run:
 
 ```sh
-yarn bootstrap
+pnpm install --frozen-lockfile
 ```
 
-This command will install all deps the dashboard needed.
+This command will install all deps the UI needed.
 
-Then, you need to provide an API server as a proxy, it will pass into an env var which named: `REACT_APP_API_URL`. There are three ways to get it:
+Set `VITE_API_BASE_URL` to the dashboard API server origin, such as `http://localhost:2333`. Vite proxies `/api` requests to this server. You can use one of the following servers:
 
 - **From a remote deployed Chaos Mesh Dashboard**
 
-  If you have Chaos Mesh deployed in a remote cluster, you can use the dashboard service URL as the proxy.
-
-  Try to access it with `http://NodePort:2333`.
+  Use a dashboard service endpoint that does not route by the HTTP `Host` header. For a dashboard behind a host-based Ingress, use the Service port-forward command below with your remote cluster's kubeconfig.
 
 - **From a local deployed Chaos Mesh Dashboard**
 
   When the cluster is local (E.g., [kind](https://kind.sigs.k8s.io/) or [minikube](https://minikube.sigs.k8s.io/)), you can use [Port Forwarding](https://kubernetes.io/docs/tasks/access-application-cluster/port-forward-access-application-cluster/) to access it:
 
   ```sh
-  kubectl port-forward -n chaos-testing svc/chaos-dashboard 2333:2333
+  kubectl port-forward -n chaos-mesh svc/chaos-dashboard 2333:2333
   ```
 
 - **From local dashboard server**
 
-  There have two ways to run chaos-dashboard server in your terminal:
+  Use a kubeconfig for a cluster with Chaos Mesh CRDs and the required RBAC permissions. The local server stores its SQLite database in the current directory by default. From the repository root, run:
 
-  - `cd .. && go run cmd/chaos-dashboard/main.go`
-  - `yarn bootstrap && yarn server`
-
-  One is real-time, the other needs to be compiled before use. The compiled bundle the extra Swagger API HTML into the binary file.
+  ```sh
+  go run ./cmd/chaos-dashboard
+  ```
 
 #### Start
 
-We already place a one-step script to start the dashboard:
+From `ui/`, start Vite with the local dashboard API server:
 
 ```sh
-# cross-env REACT_APP_API_URL=http://localhost:2333 BROWSER=none react-scripts start
-yarn start:default
+VITE_API_BASE_URL=http://localhost:2333 pnpm start
 ```
 
-Then open <http://localhost:3000> to see the preview effect.
-
-> If you want to run the dashboard and the local server concurrently:
->
-> ```sh
-> yarn start:all
-> ```
-
-### Structure
+For another dashboard service endpoint without host-based routing, replace the URL:
 
 ```sh
-src
-├── @types
-├── api
-├── components
-├── components-mui
-├── i18n
-├── lib
-├── pages
-├── reducers
-├── routes.tsx
-├── slices
-├── store.ts
-└── theme.ts
+VITE_API_BASE_URL=http://DASHBOARD_IP:2333 pnpm start
 ```
 
-The above tree structure explained as follow:
+The Vite proxy preserves the original HTTP `Host` header. A hostname-based Ingress therefore needs Service port-forwarding or a proxy configured with `changeOrigin: true` in `app/vite.config.ts`.
 
-- **`@types`** place global types, which use for Typescript.
-- **`api`** place all requests.
-- **`components`** place all packaged components.
-- **`components-mui`** nearly the same as `components`, but inherit from Material UI.
-- **`i18n`** place all translations.
-- **`lib`** place some independent functions and common utils.
-- **`reducers`** (Redux reducers)
-- **`routes.tsx`** (Client routes)
-- **`slices`** [Redux Tookit slices](https://redux-toolkit.js.org/api/createSlice)
-- **`store.ts`** (Redux store)
-- **`theme`** place global theme definitions.
+Then open <http://localhost:3000> to view it in the browser.
 
-### The rules we followed
+### Packages
 
-For better collaboration and review, we have developed a few rules to help us develop better.
-
-- [TS or JS](#ts-or-js)
-- [Styles](#styles)
-- [Be Compact](#be-compact)
-
-**_Before you contribute, you must read the following carefully._**
-
-#### TS or JS
-
-First, we use [husky](https://github.com/typicode/husky) and [lint-staged](https://github.com/okonet/lint-staged) to make [prettier](https://prettier.io/) format our code automatically before commit.
-
-~~And also, because some of us use vscode to develop the dashboard, we recommend to use [sort-imports](https://marketplace.visualstudio.com/items?itemName=amatiasq.sort-imports) to format all imports.~~ **(Sort automatically for now)**
-
-#### Styles
-
-Currently, we use `@material-ui/styles` to isolate each component styles.
-
-We hope you can follow this order **(Don't care about their value)** to organize all styles:
-
-```scss
-// Position first
-position: relative;
-top: 0;
-bottom: 0;
-left: 0;
-right: 0;
-// Then display
-display: flex;
-flex-direction: column;
-justify-content: center;
-align-items: center;
-// Layout
-width: 0;
-height: 0;
-margin: 0;
-padding: 0;
-// Colors
-background: #fff;
-color: #000;
-// Outside
-border: 0;
-box-shadow: none;
-// Finally, not often used values can be in any order
-```
-
-#### Be Compact
-
-- **Don't include unused deps.**
-- **Don't let your code be too long-winded, there will be a lot of elegant writing.**
+[`@ui/openapi`](packages/openapi/README.md) generates the API client and form data used by `app/`.
 
 ## License
 

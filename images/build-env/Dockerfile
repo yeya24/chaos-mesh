@@ -1,28 +1,38 @@
-# syntax=docker/dockerfile:experimental
+# syntax=docker/dockerfile:1
 
-FROM debian:buster-slim
+FROM node:24.22.1-bookworm-slim AS node-runtime
 
-ENV DEBIAN_FRONTEND noninteractive
+FROM golang:1.27.3-bookworm AS go-runtime
 
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG TARGETARCH
 ARG HTTPS_PROXY
 ARG HTTP_PROXY
 
-ENV http_proxy $HTTP_PROXY
-ENV https_proxy $HTTPS_PROXY
+ENV http_proxy=$HTTP_PROXY
+ENV https_proxy=$HTTPS_PROXY
 
-RUN apt-get update && apt-get install build-essential curl git pkg-config libfuse-dev fuse -y
+RUN --mount=type=cache,id=chaos-mesh-debian-bookworm-apt-${TARGETARCH},target=/var/cache/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y build-essential ca-certificates curl git pkg-config libfuse-dev fuse libatomic1 python3 && \
+    rm -rf /var/lib/apt/lists/*
 
-# require nodejs >= 12
-RUN curl -fsSL https://deb.nodesource.com/setup_14.x | bash -
-RUN apt-get install -y nodejs
-RUN npm config set unsafe-perm true
-RUN npm install yarn -g
+COPY --from=go-runtime /usr/local/go /usr/local/go
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    npm install -g pnpm@12.14.0
+ENV GOLANG_VERSION=1.27.3
+ENV GOTOOLCHAIN=local
+ENV PATH=/go/bin:/usr/local/go/bin:$PATH
+RUN mkdir -p /go/src /go/bin && chmod -R 1777 /go
+WORKDIR /go
 
-RUN if [[ -n "$HTTP_PROXY" ]]; then yarn config set proxy $HTTP_PROXY; fi
+ENV GOCACHE=/tmp/go-build
+ENV GOPATH=/tmp/go
 
-ARG TARGET_PLATFORM=amd64
-RUN curl https://dl.google.com/go/go1.15.11.linux-$TARGET_PLATFORM.tar.gz | tar -xz -C /usr/local
-ENV PATH "/usr/local/go/bin:${PATH}"
-ENV GO111MODULE=on
-ENV GOCACHE /tmp/go-build
-ENV GOPATH /tmp/go
+LABEL org.opencontainers.image.source=https://github.com/chaos-mesh/chaos-mesh

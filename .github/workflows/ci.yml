@@ -1,3 +1,15 @@
+# This workflow defines the go and ui related jobs.
+#
+# First, we use [dorny/paths-filter@v4](https://github.com/dorny/paths-filter) to
+# detect changes in go and ui related files, and then run the corresponding sub-jobs
+# based on the changes.
+#
+# Please note that due to the GitHub required checks, the `go` and `ui` jobs
+# also need to run to report the status. So here we need to define an additional
+# "skip" file to ensure that the status is reported. For details, please refer to:
+#
+# - `ci_skip.yml`
+# - https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/defining-the-mergeability-of-pull-requests/troubleshooting-required-status-checks#handling-skipped-but-required-checks
 name: ci
 
 on:
@@ -5,64 +17,149 @@ on:
     branches:
       - master
       - release-*
+  merge_group:
+
+concurrency:
+  group: ci.yml-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: read-all
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      go: ${{ steps.filter.outputs.go != 'false' || steps.filter.outputs.ci != 'false' }}
+      proto: ${{ steps.filter.outputs.proto != 'false' }}
+      ui: ${{ steps.filter.outputs.ui != 'false' || steps.filter.outputs.ci != 'false' }}
+      helm: ${{ steps.filter.outputs.helm != 'false' }}
+      build_env: ${{ steps.filter.outputs.build_env != 'false' }}
+      dev_env: ${{ steps.filter.outputs.dev_env != 'false' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: .github/ci-paths.yml
 
-  pull:
-    runs-on: ubuntu-latest
+  go:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.go == 'true' || needs.changes.outputs.helm == 'true') }}
     strategy:
       fail-fast: false
       matrix:
+        arch: [amd64, arm64]
         job:
           - verify
           - build
           - test
+    runs-on: ${{ fromJSON('{"amd64":"ubuntu-24.04", "arm64":"ubuntu-24.04-arm"}')[matrix.arch] }}
     steps:
-      - name: Set up Go 1.15
-        uses: actions/setup-go@v1
-        with:
-          go-version: 1.15.11
-        id: go
+      - name: Require change detection
+        env:
+          DETECTION_RESULT: ${{ needs.changes.result }}
+        run: test "$DETECTION_RESULT" = success
+      - uses: actions/checkout@v7
 
-      - name: Check out code into the Go module directory
-        uses: actions/checkout@v2
+      - name: Build Chaos Mesh Build Env
+        if: needs.changes.outputs.go == 'true' && matrix.job != 'verify'
+        uses: ./.github/actions/build-chaos-mesh-build-env
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: go/src/github.com/${{ github.repository }}
+          force-rebuild: ${{ needs.changes.outputs.build_env }}
 
-      - name: Setup Helm
-        uses: azure/setup-helm@v1
-        with:
-          version: v3.3.0
+      - name: Build Chaos Mesh Dev Env
+        if: (needs.changes.outputs.go == 'true' && matrix.job != 'build') || (matrix.job == 'verify' && needs.changes.outputs.helm == 'true')
+        env:
+          IMAGE_DEV_ENV_BUILD: ${{ needs.changes.outputs.dev_env == 'true' || contains(github.event.pull_request.labels.*.name, 'rebuild-dev-env-image') }}
+        run: |
+          if [ "${IMAGE_DEV_ENV_BUILD}" = "true" ] ; then
+            export IMAGE_DEV_ENV_BUILD=1;
+          else
+            export IMAGE_DEV_ENV_BUILD=0;
+          fi
+
+          make image-dev-env
+
+      - name: Verify protobuf generation
+        if: matrix.job == 'verify' && needs.changes.outputs.proto == 'true'
+        run: |
+          make proto
+          git diff --quiet
 
       - name: ${{ matrix.job }}
+        if: needs.changes.outputs.go == 'true'
+        env:
+          job: ${{ matrix.job }}
         run: |
-          # workaround for https://github.com/actions/setup-go/issues/14
-          export GOPATH=${GITHUB_WORKSPACE}/go
-          export PATH=$PATH:$GOPATH/bin
-          make ensure-kubebuilder || echo 0
-          make ensure-kustomize || echo 0
-
-          # preload go modules before goimports
-          go mod download -x
-
-          make groupimports || echo 0
-          #use sh function
-
           if [[ "$job" == "verify" ]]; then
             make check
-            echo "Please make check before creating a PR"
-            git diff --quiet -- . || (git diff | cat && false)
-            make check-install-script
+            echo "Please run [make check] before creating a PR"
+            git diff --quiet
           elif [[ "$job" == "build" ]]; then
             make image
           elif [[ "$job" == "test" ]]; then
-            ROOT=$(pwd)
-            KUBEBUILDER_ASSETS=${ROOT}/output/bin/kubebuilder/bin make test
-            BUILD_NUMBER=${BUILD_NUMBER} CODECOV_TOKEN="${CODECOV_TOKEN}" CI=1 make coverage
+            make test
           else
             make $job
           fi
-        working-directory: ${{ github.workspace }}/go/src/github.com/${{ github.repository }}
+
+      - name: Verify Helm chart
+        if: matrix.job == 'verify' && needs.changes.outputs.helm == 'true'
+        run: |
+          make helm-check
+          git diff --exit-code -- helm/chaos-mesh/values.schema.json
+
+      - name: Upload Code Coverage
+        uses: codecov/codecov-action@v7
+        if: matrix.job == 'test' && needs.changes.outputs.go == 'true'
+        with:
+          files: ./cover.out
+  ui:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ui == 'true') }}
+    runs-on: ubuntu-latest
+    env:
+      HUSKY: 0
+    defaults:
+      run:
+        working-directory: ./ui
+    strategy:
+      matrix:
+        job:
+          - build
+          - test
+    steps:
+      - name: Require change detection
         env:
-          job: ${{ matrix.job }}
+          DETECTION_RESULT: ${{ needs.changes.result }}
+        working-directory: .
+        run: test "$DETECTION_RESULT" = success
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+          cache-dependency-path: "ui/pnpm-lock.yaml"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Cache app/dist
+        if: ${{ matrix.job == 'build' }}
+        uses: actions/cache@v6
+        with:
+          path: ./ui/app/dist
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('ui/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Build app
+        if: ${{ matrix.job == 'build' }}
+        run: pnpm build
+
+      - name: Run tests
+        if: ${{ matrix.job == 'test' }}
+        run: pnpm test

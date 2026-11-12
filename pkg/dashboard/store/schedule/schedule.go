@@ -1,0 +1,143 @@
+// Copyright 2021 Chaos Mesh Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+package schedule
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"gorm.io/gorm"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	"github.com/chaos-mesh/chaos-mesh/pkg/dashboard/core"
+	"github.com/chaos-mesh/chaos-mesh/pkg/dashboard/store/utils"
+)
+
+var log = ctrl.Log.WithName("store/schedule")
+
+// NewStore returns a new Store.
+func NewStore(db *gorm.DB) (core.ScheduleStore, error) {
+	if err := db.AutoMigrate(&core.Schedule{}); err != nil {
+		return nil, fmt.Errorf("migrate schedule table: %w", err)
+	}
+
+	return &Store{db}, nil
+}
+
+// DeleteIncompleteSchedules call core.ScheduleStore.DeleteIncompleteSchedules to deletes all incomplete schedules.
+func DeleteIncompleteSchedules(es core.ScheduleStore, _ core.EventStore) {
+	if err := es.DeleteIncompleteSchedules(context.Background()); err != nil {
+		log.Error(err, "failed to delete all incomplete schedules")
+	}
+}
+
+type Store struct {
+	db *gorm.DB
+}
+
+// ListMeta implements the core.ScheduleStore.ListMeta method.
+func (e *Store) ListMeta(ctx context.Context, namespace, name string, archived bool) ([]*core.ScheduleMeta, error) {
+	db := e.db.WithContext(ctx).Model(&core.Schedule{})
+	sches := make([]*core.ScheduleMeta, 0)
+	query, args := utils.ConstructQueryArgs("", namespace, name, "")
+	if query != "" {
+		db = db.Where(query, args...)
+	}
+
+	if err := db.Where("archived = ?", archived).Find(&sches).Error; err != nil {
+		return nil, err
+	}
+
+	return sches, nil
+}
+
+// FindByUID implements the core.ScheduleStore.FindByUID method.
+func (e *Store) FindByUID(ctx context.Context, uid string) (*core.Schedule, error) {
+	sch := new(core.Schedule)
+
+	if err := e.db.WithContext(ctx).Where("uid = ?", uid).Take(sch).Error; err != nil {
+		return nil, err
+	}
+
+	return sch, nil
+}
+
+// FindMetaByUID implements the core.ScheduleStore.FindMetaByUID method.
+func (e *Store) FindMetaByUID(ctx context.Context, uid string) (*core.ScheduleMeta, error) {
+	sch := new(core.ScheduleMeta)
+
+	if err := e.db.WithContext(ctx).Model(&core.Schedule{}).Where("uid = ?", uid).Take(sch).Error; err != nil {
+		return nil, err
+	}
+
+	return sch, nil
+}
+
+// Save implements the core.ScheduleStore.Save method.
+func (e *Store) Save(ctx context.Context, schedule *core.Schedule) error {
+	return e.db.WithContext(ctx).Save(schedule).Error
+}
+
+// Archive implements the core.ScheduleStore.Archive method.
+func (e *Store) Archive(ctx context.Context, ns, name string) error {
+	if err := e.db.WithContext(ctx).Model(&core.Schedule{}).
+		Where("namespace = ? AND name = ? AND archived = ?", ns, name, false).
+		Updates(map[string]any{"archived": true, "finish_time": gorm.Expr("COALESCE(finish_time, ?)", time.Now())}).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	return nil
+}
+
+// Delete deletes the schedule from the datastore.
+func (e *Store) Delete(ctx context.Context, schedule *core.Schedule) error {
+	return e.db.WithContext(ctx).Unscoped().Delete(schedule).Error
+}
+
+// DeleteByFinishTime deletes schedules whose time difference is greater than the given time from FinishTime.
+func (e *Store) DeleteByFinishTime(ctx context.Context, ttl time.Duration) error {
+	sches, err := e.ListMeta(ctx, "", "", true)
+	if err != nil {
+		return err
+	}
+
+	nowTime := time.Now()
+	for _, sch := range sches {
+		if sch.FinishTime == nil {
+			log.Error(nil, "finish time is nil when deleting archived schedule records, skip it", "schedule", sch)
+			continue
+		}
+		if sch.FinishTime.Add(ttl).Before(nowTime) {
+			if err := e.db.WithContext(ctx).Unscoped().Delete(&core.Schedule{}, sch.ID).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// DeleteByUIDs deletes schedules by the uid list.
+func (e *Store) DeleteByUIDs(ctx context.Context, uids []string) error {
+	return e.db.WithContext(ctx).Where("uid IN (?)", uids).Unscoped().Delete(&core.Schedule{}).Error
+}
+
+// DeleteIncompleteSchedules implements the core.ScheduleStore.DeleteIncompleteSchedules method.
+func (e *Store) DeleteIncompleteSchedules(ctx context.Context) error {
+	return e.db.WithContext(ctx).Where("finish_time IS NULL").Unscoped().Delete(&core.Schedule{}).Error
+}

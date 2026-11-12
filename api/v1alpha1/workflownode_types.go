@@ -4,27 +4,35 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 const (
-	LabelControlledBy = "chaos-mesh.org/controlled-by"
-	LabelWorkflow     = "chaos-mesh.org/workflow"
+	LabelControlledBy       = "chaos-mesh.org/controlled-by"
+	LabelWorkflow           = "chaos-mesh.org/workflow"
+	WorkflowAnnotationAbort = "workflow.chaos-mesh.org/abort"
 )
 
+const KindWorkflowNode = "WorkflowNode"
+
+// WorkflowNode represents an execution of a workflow template.
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=wfn
+// +kubebuilder:subresource:status
 type WorkflowNode struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -34,45 +42,78 @@ type WorkflowNode struct {
 
 	// +optional
 	// Most recently observed status of the workflow node
-	Status WorkflowNodeStatus `json:"status"`
+	Status WorkflowNodeStatus `json:"status,omitempty"`
 }
 
 type WorkflowNodeSpec struct {
-	TemplateName string       `json:"template_name"`
-	WorkflowName string       `json:"workflow_name"`
+	TemplateName string       `json:"templateName"`
+	WorkflowName string       `json:"workflowName"`
 	Type         TemplateType `json:"type"`
-	StartTime    *metav1.Time `json:"start_time"`
+	StartTime    *metav1.Time `json:"startTime"`
 	// +optional
 	Deadline *metav1.Time `json:"deadline,omitempty"`
 	// +optional
-	Tasks []string `json:"tasks,omitempty"`
+	Task *Task `json:"task,omitempty"`
+	// +optional
+	Children []string `json:"children,omitempty"`
+	// +optional
+	ConditionalBranches []ConditionalBranch `json:"conditionalBranches,omitempty"`
 	// +optional
 	*EmbedChaos `json:",inline,omitempty"`
+	// +optional
+	Schedule *ScheduleSpec `json:"schedule,omitempty"`
+	// StatusCheck describe the behavior of StatusCheck. Only used when Type is TypeStatusCheck.
+	// +optional
+	StatusCheck *StatusCheckSpec `json:"statusCheck,omitempty"`
+	// AbortWithStatusCheck describe whether to abort the workflow when the failure threshold of StatusCheck is exceeded.
+	// Only used when Type is TypeStatusCheck.
+	// +optional
+	AbortWithStatusCheck bool `json:"abortWithStatusCheck,omitempty"`
 }
 
 type WorkflowNodeStatus struct {
 
-	// ExpectedChildrenNum means the expected children to execute
-	// +optional
-	ExpectedChildrenNum *int `json:"expected_children_num,omitempty"`
-
 	// ChaosResource refs to the real chaos CR object.
 	// +optional
-	ChaosResource *corev1.TypedLocalObjectReference `json:"chaos_resource,omitempty"`
+	ChaosResource *corev1.TypedLocalObjectReference `json:"chaosResource,omitempty"`
+
+	// ConditionalBranchesStatus records the evaluation result of each ConditionalBranch
+	// +optional
+	ConditionalBranchesStatus *ConditionalBranchesStatus `json:"conditionalBranchesStatus,omitempty"`
 
 	// ActiveChildren means the created children node
 	// +optional
-	ActiveChildren []corev1.LocalObjectReference `json:"active_children,omitempty"`
+	ActiveChildren []corev1.LocalObjectReference `json:"activeChildren,omitempty"`
 
 	// Children is necessary for representing the order when replicated child template references by parent template.
 	// +optional
-	FinishedChildren []corev1.LocalObjectReference `json:"finished_children,omitempty"`
+	FinishedChildren []corev1.LocalObjectReference `json:"finishedChildren,omitempty"`
 
-	// Represents the latest available observations of a worklfow node's current state.
+	// Represents the latest available observations of a workflow node's current state.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []WorkflowNodeCondition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+}
+
+type ConditionalBranch struct {
+	// Target is the name of other template, if expression is evaluated as true, this template will be spawned.
+	Target string `json:"target"`
+	// Expression is the expression for this conditional branch, expected type of result is boolean. If expression is empty, this branch will always be selected/the template will be spawned.
+	// +optional
+	Expression string `json:"expression,omitempty"`
+}
+
+type ConditionalBranchesStatus struct {
+	// +optional
+	Branches []ConditionalBranchStatus `json:"branches"`
+	// +optional
+	Context []string `json:"context"`
+}
+
+type ConditionalBranchStatus struct {
+	Target           string                 `json:"target"`
+	EvaluationResult corev1.ConditionStatus `json:"evaluationResult"`
 }
 
 type WorkflowNodeConditionType string
@@ -81,6 +122,7 @@ const (
 	ConditionAccomplished   WorkflowNodeConditionType = "Accomplished"
 	ConditionDeadlineExceed WorkflowNodeConditionType = "DeadlineExceed"
 	ConditionChaosInjected  WorkflowNodeConditionType = "ChaosInjected"
+	ConditionAborted        WorkflowNodeConditionType = "Aborted"
 )
 
 type WorkflowNodeCondition struct {
@@ -89,6 +131,7 @@ type WorkflowNodeCondition struct {
 	Reason string                    `json:"reason"`
 }
 
+// WorkflowNodeList contains a list of WorkflowNode resources.
 // +kubebuilder:object:root=true
 type WorkflowNodeList struct {
 	metav1.TypeMeta `json:",inline"`
@@ -102,12 +145,47 @@ func init() {
 
 // Reasons
 const (
-	EntryCreated          string = "EntryCreated"
-	InvalidEntry          string = "InvalidEntry"
-	NodeAccomplished      string = "NodeAccomplished"
-	NodeDeadlineExceed    string = "NodeDeadlineExceed"
-	NodeDeadlineNotExceed string = "NodeDeadlineNotExceed"
-	NodeDeadlineOmitted   string = "NodeDeadlineOmitted"
-	ChaosCRCreated        string = "ChaosCRCreated"
-	ChaosCRCreateFailed   string = "ChaosCRCreateFailed"
+	EntryCreated                         string = "EntryCreated"
+	InvalidEntry                         string = "InvalidEntry"
+	WorkflowAccomplished                 string = "WorkflowAccomplished"
+	NodeAccomplished                     string = "NodeAccomplished"
+	NodesCreated                         string = "NodesCreated"
+	NodeDeadlineExceed                   string = "NodeDeadlineExceed"
+	NodeDeadlineNotExceed                string = "NodeDeadlineNotExceed"
+	NodeDeadlineOmitted                  string = "NodeDeadlineOmitted"
+	ParentNodeDeadlineExceed             string = "ParentNodeDeadlineExceed"
+	ChaosCRCreated                       string = "ChaosCRCreated"
+	ChaosCRCreateFailed                  string = "ChaosCRCreateFailed"
+	ChaosCRDeleted                       string = "ChaosCRDeleted"
+	ChaosCRDeleteFailed                  string = "ChaosCRDeleteFailed"
+	ChaosCRNotExists                     string = "ChaosCRNotExists"
+	TaskPodSpawned                       string = "TaskPodSpawned"
+	TaskPodSpawnFailed                   string = "TaskPodSpawnFailed"
+	TaskPodPodCompleted                  string = "TaskPodPodCompleted"
+	ConditionalBranchesSelected          string = "ConditionalBranchesSelected"
+	RerunBySpecChanged                   string = "RerunBySpecChanged"
+	StatusCheckCreated                   string = "StatusCheckCreated"
+	StatusCheckCreatedFailed             string = "StatusCheckCreatedFailed"
+	StatusCheckDeleted                   string = "StatusCheckDeleted"
+	StatusCheckDeletedFailed             string = "StatusCheckDeletedFailed"
+	StatusCheckCompleted                 string = "StatusCheckCompleted"
+	StatusCheckNotExceedSuccessThreshold string = "StatusCheckNotExceedSuccessThreshold"
+	ParentNodeAborted                    string = "ParentNodeAborted"
+	WorkflowAborted                      string = "WorkflowAborted"
 )
+
+// GenericChaosList only use to list GenericChaos by certain EmbedChaos
+// +kubebuilder:object:generate=false
+type GenericChaosList interface {
+	runtime.Object
+	metav1.ListInterface
+	GetItems() []GenericChaos
+	DeepCopyList() GenericChaosList
+}
+
+// GenericChaos could be a place holder for any kubernetes Kind
+// +kubebuilder:object:generate=false
+type GenericChaos interface {
+	runtime.Object
+	metav1.Object
+}

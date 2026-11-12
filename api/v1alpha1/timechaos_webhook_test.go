@@ -1,20 +1,24 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package v1alpha1
 
 import (
-	. "github.com/onsi/ginkgo"
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -23,14 +27,14 @@ var _ = Describe("timechaos_webhook", func() {
 	Context("Defaulter", func() {
 		It("set default namespace selector", func() {
 			timechaos := &TimeChaos{
-				ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault},
+				Namespace: metav1.NamespaceDefault,
 			}
-			timechaos.Default()
+			timechaos.Default(context.Background(), timechaos)
 			Expect(timechaos.Spec.Selector.Namespaces[0]).To(Equal(metav1.NamespaceDefault))
 			Expect(timechaos.Spec.ClockIds[0]).To(Equal("CLOCK_REALTIME"))
 		})
 	})
-	Context("ChaosValidator of timechaos", func() {
+	Context("webhook.Validator of timechaos", func() {
 		It("Validate", func() {
 
 			type TestCase struct {
@@ -39,7 +43,6 @@ var _ = Describe("timechaos_webhook", func() {
 				execute func(chaos *TimeChaos) error
 				expect  string
 			}
-			duration := "400s"
 			tcs := []TestCase{
 				{
 					name: "simple ValidateCreate",
@@ -51,7 +54,8 @@ var _ = Describe("timechaos_webhook", func() {
 						Spec: TimeChaosSpec{TimeOffset: "1s"},
 					},
 					execute: func(chaos *TimeChaos) error {
-						return chaos.ValidateCreate()
+						_, err := chaos.ValidateCreate(context.Background(), chaos)
+						return err
 					},
 					expect: "",
 				},
@@ -65,7 +69,8 @@ var _ = Describe("timechaos_webhook", func() {
 						Spec: TimeChaosSpec{TimeOffset: "1s"},
 					},
 					execute: func(chaos *TimeChaos) error {
-						return chaos.ValidateUpdate(chaos)
+						_, err := chaos.ValidateUpdate(context.Background(), chaos, chaos)
+						return err
 					},
 					expect: "",
 				},
@@ -79,45 +84,10 @@ var _ = Describe("timechaos_webhook", func() {
 						Spec: TimeChaosSpec{TimeOffset: "1s"},
 					},
 					execute: func(chaos *TimeChaos) error {
-						return chaos.ValidateDelete()
+						_, err := chaos.ValidateDelete(context.Background(), chaos)
+						return err
 					},
 					expect: "",
-				},
-				{
-					name: "only define the Scheduler",
-					chaos: TimeChaos{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: metav1.NamespaceDefault,
-							Name:      "foo4",
-						},
-						Spec: TimeChaosSpec{
-							Scheduler: &SchedulerSpec{
-								Cron: "@every 10m",
-							},
-							TimeOffset: "1s",
-						},
-					},
-					execute: func(chaos *TimeChaos) error {
-						return chaos.ValidateCreate()
-					},
-					expect: "error",
-				},
-				{
-					name: "only define the Duration",
-					chaos: TimeChaos{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: metav1.NamespaceDefault,
-							Name:      "foo5",
-						},
-						Spec: TimeChaosSpec{
-							Duration:   &duration,
-							TimeOffset: "1s",
-						},
-					},
-					execute: func(chaos *TimeChaos) error {
-						return chaos.ValidateCreate()
-					},
-					expect: "error",
 				},
 				{
 					name: "validate the timeOffset",
@@ -131,7 +101,8 @@ var _ = Describe("timechaos_webhook", func() {
 						},
 					},
 					execute: func(chaos *TimeChaos) error {
-						return chaos.ValidateCreate()
+						_, err := chaos.ValidateCreate(context.Background(), chaos)
+						return err
 					},
 					expect: "error",
 				},

@@ -1,0 +1,140 @@
+// Copyright 2021 Chaos Mesh Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+package core
+
+import (
+	"encoding/json"
+	"sort"
+	"strings"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+type ObjectBase struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	UID       string `json:"uid"`
+	Created   string `json:"created_at"`
+}
+
+// KubeObjectDesc defines a simple kube object description which uses in apiserver.
+type KubeObjectDesc struct {
+	metav1.TypeMeta
+	Meta KubeObjectMeta `json:"metadata"`
+	Spec any            `json:"spec"`
+}
+
+// KubeObjectMeta contains the Kubernetes object metadata exposed by the dashboard.
+type KubeObjectMeta struct {
+	Namespace   string            `json:"namespace"`
+	Name        string            `json:"name"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+type Filter struct {
+	ObjectID  string `json:"object_id"`
+	Start     string `json:"start"`
+	End       string `json:"end"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Limit     string `json:"limit"`
+}
+
+func (f *Filter) toMap() map[string]any {
+	var fMap map[string]any
+
+	marshal, _ := json.Marshal(f)
+	_ = json.Unmarshal(marshal, &fMap)
+
+	return fMap
+}
+
+const zeroTime = "0001-01-01 00:00:00"
+
+func (f *Filter) ConstructQueryArgs() (string, []any) {
+	fMap, query, args := f.toMap(), make([]string, 0), make([]any, 0)
+
+	// Sort keys to ensure consistent order
+	keys := make([]string, 0, len(fMap))
+	for k, v := range fMap {
+		if v != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
+	if len(keys) == 0 {
+		return "", nil
+	}
+
+	for _, k := range keys {
+		v := fMap[k]
+		if k == "start" || k == "end" || k == "limit" {
+			continue
+		}
+
+		if len(args) > 0 {
+			query = append(query, "AND", k, "= ?")
+		} else {
+			query = append(query, k, "= ?")
+		}
+
+		args = append(args, v)
+	}
+
+	startEnd := ""
+	start := f.Start
+	end := f.End
+	if start == "" {
+		start = zeroTime
+	}
+	if end == "" {
+		end = zeroTime
+	}
+
+	if start != zeroTime && end != zeroTime {
+		startEnd = "created_at BETWEEN ? AND ?"
+		args = append(args, filterTimeArgument(start), filterTimeArgument(end))
+	} else if start != zeroTime && end == zeroTime {
+		startEnd = "created_at >= ?"
+		args = append(args, filterTimeArgument(start))
+	} else if start == zeroTime && end != zeroTime {
+		startEnd = "created_at <= ?"
+		args = append(args, filterTimeArgument(end))
+	}
+
+	if startEnd != "" {
+		if len(query) > 0 {
+			query = append(query, "AND", startEnd)
+		} else {
+			query = append(query, startEnd)
+		}
+	}
+
+	return strings.Join(query, " "), args
+}
+
+func filterTimeArgument(value string) any {
+	parsed, err := time.Parse("2006-01-02 15:04:05", value)
+	if err != nil {
+		return value
+	}
+	return parsed
+}

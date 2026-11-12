@@ -1,25 +1,65 @@
-FROM debian:buster-slim
+FROM curlimages/curl:8.23.0 AS binaryimage
+
+USER root
 
 ARG HTTPS_PROXY
 ARG HTTP_PROXY
 
-ENV http_proxy $HTTP_PROXY
-ENV https_proxy $HTTPS_PROXY
+ENV http_proxy=$HTTP_PROXY
+ENV https_proxy=$HTTPS_PROXY
 
-RUN apt-get update && apt-get install -y tzdata iptables ipset stress-ng iproute2 fuse util-linux procps curl && rm -rf /var/lib/apt/lists/*
+ARG TARGET_PLATFORM=amd64
 
-RUN update-alternatives --set iptables /usr/sbin/iptables-legacy
+RUN mkdir -p /tmp/bin && \
+    curl -L https://mirrors.chaos-mesh.org/byteman-chaos-mesh-download-v4.0.27-0.12.tar.gz -o /usr/local/byteman.tar.gz && \
+    tar xvf /usr/local/byteman.tar.gz -C /usr/local && \
+    mv /usr/local/byteman-chaos-mesh-download-v4.0.27-0.12 /tmp/byteman && \
+    rm /usr/local/byteman.tar.gz
 
-ENV RUST_BACKTRACE 1
+# toda doesn't support arm64 yet
+RUN curl -L https://github.com/chaos-mesh/toda/releases/download/v0.3.0/toda-linux-amd64.tar.gz | tar xz -C /tmp/bin
+RUN case "$TARGET_PLATFORM" in \
+    'amd64') \
+    export NSEXEC_ARCH='x86_64'; \
+    ;; \
+    'arm64') \
+    export NSEXEC_ARCH='aarch64'; \
+    ;; \
+    *) echo >&2 "error: unsupported architecture '$TARGET_PLATFORM'"; exit 1 ;; \
+    esac; \
+    curl -L https://github.com/chaos-mesh/nsexec/releases/download/v0.1.7-r1/nsexec-$NSEXEC_ARCH-unknown-linux-gnu.tar.gz | tar xz -C /tmp/bin; \
+    curl -L https://github.com/chaos-mesh/chaos-tproxy/releases/download/v0.5.7/tproxy-$NSEXEC_ARCH.tar.gz | tar xz -C /tmp/bin; \
+    curl -L https://github.com/chaos-mesh/memStress/releases/download/v0.3.1/memStress_v0.3.1-$NSEXEC_ARCH-linux-gnu.tar.gz | tar xz -C /tmp/bin
 
-RUN curl -L https://github.com/chaos-mesh/toda/releases/download/v0.2.0/toda-linux-amd64.tar.gz -o /usr/local/bin/toda.tar.gz
-RUN curl -L https://github.com/chaos-mesh/nsexec/releases/download/v0.1.5/nsexec-linux-amd64.tar.gz -o /usr/local/bin/nsexec.tar.gz
+# ---
+FROM debian:bookworm-slim
 
-RUN tar xvf /usr/local/bin/toda.tar.gz -C /usr/local/bin
-RUN rm /usr/local/bin/toda.tar.gz
-RUN tar xvf /usr/local/bin/nsexec.tar.gz -C /usr/local/bin
-RUN rm /usr/local/bin/nsexec.tar.gz
-RUN cp /usr/local/bin/libnsenter.so /usr/local/lib/libnsenter.so
+ARG HTTPS_PROXY
+ARG HTTP_PROXY
+
+ENV http_proxy=$HTTP_PROXY
+ENV https_proxy=$HTTPS_PROXY
+
+RUN echo "deb http://security.debian.org/debian-security bookworm-security main contrib non-free" >> /etc/apt/sources.list && \
+    echo "deb http://deb.debian.org/debian bookworm-proposed-updates main contrib non-free" >> /etc/apt/sources.list && \
+    apt update --allow-releaseinfo-change && apt upgrade -y && \
+    apt install -y tzdata iptables ebtables net-tools ipset stress-ng iproute2 fuse util-linux procps openjdk-17-jre-headless && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --set iptables /usr/sbin/iptables-legacy && \
+    update-alternatives --set ebtables /usr/sbin/ebtables-legacy
+
+ENV RUST_BACKTRACE=1
+ENV BYTEMAN_HOME=/usr/local/byteman
+ENV PATH=$PATH:/usr/local/byteman/bin
+RUN ln -s /usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture) /usr/local/java
+ENV JAVA_HOME=/usr/local/java
+ENV PATH=$PATH:/usr/local/bin
 
 COPY bin/chaos-daemon /usr/local/bin/chaos-daemon
 COPY bin/pause /usr/local/bin/pause
+COPY bin/cdh /usr/local/bin/cdh
+COPY --from=binaryimage /tmp/byteman /usr/local/byteman
+COPY --from=binaryimage /tmp/bin/* /usr/local/bin/
+
+RUN mv /usr/local/bin/libnsenter.so /usr/local/lib/libnsenter.so

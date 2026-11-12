@@ -1,21 +1,26 @@
-// Copyright 2019 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
+// Package flags parses key-value command-line flags into string maps.
 package flags
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
 // MapStringStringFlag is a flag struct for key=value pairs
@@ -37,10 +42,10 @@ func (s *MapStringStringFlag) Set(value string) error {
 	if s.Values == nil {
 		s.Values = map[string]string{}
 	}
-	for _, p := range strings.Split(value, ",") {
+	for p := range strings.SplitSeq(value, ",") {
 		fields := strings.Split(p, "=")
 		if len(fields) != 2 {
-			return fmt.Errorf("%s is incorrectly formatted! should be key=value[,key2=value2]", p)
+			return errors.Errorf("%s is incorrectly formatted! should be key=value[,key2=value2]", p)
 		}
 		s.Values[fields[0]] = fields[1]
 	}

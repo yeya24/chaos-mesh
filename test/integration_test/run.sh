@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-
-# Copyright 2020 Chaos Mesh Authors.
+# Copyright 2021 Chaos Mesh Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
 
 set -eu
 
@@ -40,12 +41,22 @@ fi
 
 if [ "$test_case" == "*" ]; then
     for script in $test_dir/$test_case/run.sh; do
+        if [ "$script" == "$test_dir/oidc/run.sh" ]; then
+            continue
+        fi
+
+        # chaosd is not supported in aarch64
+        # TODO: support chaosd in aarch64, and remove this check
+        if [[ $script == *"physical_machine"* && "$(uname -m)" == "aarch64" ]]; then
+            continue
+        fi
+
         run $script
     done
 else
     for name in $test_case; do
         script="$test_dir/$name/run.sh"
-	echo "run $script"
+        echo "run $script"
         run $script
     done
 fi

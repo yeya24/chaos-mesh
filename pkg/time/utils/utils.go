@@ -1,25 +1,28 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
+// Package utils encodes Linux clock names as bit masks for time fault injection.
 package utils
 
-import "fmt"
+import "github.com/pkg/errors"
 
-// EncodeClkIds will convert array of clk ids into a mask
-func EncodeClkIds(clkIds []string) (uint64, error) {
+// EncodeClkIDs will convert array of clk ids into a mask
+func EncodeClkIDs(clkIDs []string) (uint64, error) {
 	mask := uint64(0)
 
-	for _, id := range clkIds {
+	for _, id := range clkIDs {
 		// refer to `uapi/linux/time.h`
 		switch id {
 		case "CLOCK_REALTIME":
@@ -43,7 +46,7 @@ func EncodeClkIds(clkIds []string) (uint64, error) {
 		case "CLOCK_BOOTTIME_ALARM":
 			mask |= 1 << 9
 		default:
-			return 0, fmt.Errorf("unknown clock id %s", id)
+			return 0, errors.Errorf("unknown clock id %s", id)
 		}
 	}
 

@@ -1,41 +1,53 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package chaosdaemon
 
 import (
 	"context"
-	"errors"
-	"io/ioutil"
 	"os"
 	"os/exec"
+	"runtime"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pkg/errors"
 
+	"github.com/chaos-mesh/chaos-mesh/api/v1alpha1"
 	"github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/crclients"
 	"github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/crclients/test"
-	pb "github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/pb"
+	"github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/pb"
+	"github.com/chaos-mesh/chaos-mesh/pkg/log"
 	"github.com/chaos-mesh/chaos-mesh/pkg/mock"
 )
 
 var _ = Describe("ipset server", func() {
+	BeforeEach(func() {
+		if runtime.GOOS != "linux" {
+			Skip("network namespaces require Linux")
+		}
+	})
+
 	defer mock.With("MockContainerdClient", &test.MockClient{})()
-	s, _ := newDaemonServer(crclients.ContainerRuntimeContainerd)
+	logger := log.NewZapLoggerWithWriter(GinkgoWriter)
+	s, _ := newDaemonServer(&crclients.CrClientConfig{
+		Runtime: crclients.ContainerRuntimeContainerd}, nil, logger)
 
 	Context("createIPSet", func() {
 		It("should work", func() {
-			defer mock.With("MockProcessBuild", func(ctx context.Context, cmd string, args ...string) *exec.Cmd {
+			defer mock.With("MockProcessBuild", func(_ context.Context, cmd string, args ...string) *exec.Cmd {
 				Expect(cmd).To(Equal("/usr/local/bin/nsexec"))
 				Expect(args[0]).To(Equal("-n"))
 				Expect(args[1]).To(Equal("/proc/1/ns/net"))
@@ -46,13 +58,13 @@ var _ = Describe("ipset server", func() {
 				Expect(args[6]).To(Equal("hash:net"))
 				return exec.Command("echo", "mock command")
 			})()
-			err := createIPSet(context.TODO(), true, 1, "name")
+			err := createIPSet(context.TODO(), logger, true, 1, "name", v1alpha1.NetIPSet)
 			Expect(err).To(BeNil())
 		})
 
 		It("should work since ipset exist", func() {
 			// The mockfail.sh will fail only once
-			err := ioutil.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
+			err := os.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
 echo $1
 cat > /tmp/mockfail.sh << EOF
 #! /bin/sh
@@ -62,16 +74,16 @@ exit 1
 			`), 0755)
 			Expect(err).To(BeNil())
 			defer os.Remove("/tmp/mockfail.sh")
-			defer mock.With("MockProcessBuild", func(ctx context.Context, cmd string, args ...string) *exec.Cmd {
+			defer mock.With("MockProcessBuild", func(_ context.Context, _ string, _ ...string) *exec.Cmd {
 				return exec.Command("/tmp/mockfail.sh", ipsetExistErr)
 			})()
-			err = createIPSet(context.TODO(), true, 1, "name")
+			err = createIPSet(context.TODO(), logger, true, 1, "name", v1alpha1.NetIPSet)
 			Expect(err).To(BeNil())
 		})
 
 		It("shoud fail on the first command", func() {
 			// The mockfail.sh will fail
-			err := ioutil.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
+			err := os.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
 echo $1
 exit 1
 			`), 0755)
@@ -80,13 +92,13 @@ exit 1
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("/tmp/mockfail.sh", "fail msg")
 			})()
-			err = createIPSet(context.TODO(), true, 1, "name")
+			err = createIPSet(context.TODO(), logger, true, 1, "name", v1alpha1.NetIPSet)
 			Expect(err).ToNot(BeNil())
 		})
 
 		It("shoud fail on the second command", func() {
 			// The mockfail.sh will fail
-			err := ioutil.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
+			err := os.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
 echo $1
 exit 1
 			`), 0755)
@@ -95,23 +107,23 @@ exit 1
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("/tmp/mockfail.sh", ipsetExistErr)
 			})()
-			err = createIPSet(context.TODO(), true, 1, "name")
+			err = createIPSet(context.TODO(), logger, true, 1, "name", v1alpha1.NetIPSet)
 			Expect(err).ToNot(BeNil())
 		})
 	})
 
-	Context("addIpsToIPSet", func() {
+	Context("addToIPSet", func() {
 		It("should work", func() {
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("echo", "mock command")
 			})()
-			err := addCIDRsToIPSet(context.TODO(), true, 1, "name", []string{"1.1.1.1"})
+			err := addToIPSet(context.TODO(), logger, true, 1, "name", "1.1.1.1")
 			Expect(err).To(BeNil())
 		})
 
-		It("should work since ip exist", func() {
+		It("should work if ipset exists", func() {
 			// The mockfail.sh will fail
-			err := ioutil.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
+			err := os.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
 echo $1
 exit 1
 			`), 0755)
@@ -120,13 +132,13 @@ exit 1
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("/tmp/mockfail.sh", ipExistErr)
 			})()
-			err = addCIDRsToIPSet(context.TODO(), true, 1, "name", []string{"1.1.1.1"})
+			err = addToIPSet(context.TODO(), logger, true, 1, "name", "1.1.1.1")
 			Expect(err).To(BeNil())
 		})
 
 		It("should fail", func() {
 			// The mockfail.sh will fail
-			err := ioutil.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
+			err := os.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
 echo $1
 exit 1
 			`), 0755)
@@ -135,7 +147,7 @@ exit 1
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("/tmp/mockfail.sh", "fail msg")
 			})()
-			err = addCIDRsToIPSet(context.TODO(), true, 1, "name", []string{"1.1.1.1"})
+			err = addToIPSet(context.TODO(), logger, true, 1, "name", "1.1.1.1")
 			Expect(err).ToNot(BeNil())
 		})
 	})
@@ -145,13 +157,13 @@ exit 1
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("echo", "mock command")
 			})()
-			err := renameIPSet(context.TODO(), true, 1, "name", "newname")
+			err := renameIPSet(context.TODO(), logger, true, 1, "name", "newname")
 			Expect(err).To(BeNil())
 		})
 
 		It("should work since ipset exist", func() {
 			// The mockfail.sh will fail only once
-			err := ioutil.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
+			err := os.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
 echo $1
 cat > /tmp/mockfail.sh << EOF
 #! /bin/sh
@@ -164,13 +176,13 @@ exit 1
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("/tmp/mockfail.sh", ipsetNewNameExistErr)
 			})()
-			err = renameIPSet(context.TODO(), true, 1, "name", "newname")
+			err = renameIPSet(context.TODO(), logger, true, 1, "name", "newname")
 			Expect(err).To(BeNil())
 		})
 
 		It("shoud fail on the first command", func() {
 			// The mockfail.sh will fail
-			err := ioutil.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
+			err := os.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
 echo $1
 exit 1
 			`), 0755)
@@ -179,13 +191,13 @@ exit 1
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("/tmp/mockfail.sh", "fail msg")
 			})()
-			err = renameIPSet(context.TODO(), true, 1, "name", "newname")
+			err = renameIPSet(context.TODO(), logger, true, 1, "name", "newname")
 			Expect(err).ToNot(BeNil())
 		})
 
 		It("shoud fail on the second command", func() {
 			// The mockfail.sh will fail
-			err := ioutil.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
+			err := os.WriteFile("/tmp/mockfail.sh", []byte(`#! /bin/sh
 echo $1
 exit 1
 			`), 0755)
@@ -194,7 +206,7 @@ exit 1
 			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
 				return exec.Command("/tmp/mockfail.sh", ipsetExistErr)
 			})()
-			err = renameIPSet(context.TODO(), true, 1, "name", "newname")
+			err = renameIPSet(context.TODO(), logger, true, 1, "name", "newname")
 			Expect(err).ToNot(BeNil())
 		})
 	})
@@ -205,29 +217,84 @@ exit 1
 				return exec.Command("echo", "mock command")
 			})()
 			_, err := s.FlushIPSets(context.TODO(), &pb.IPSetsRequest{
-				Ipsets: []*pb.IPSet{{
-					Name:  "ipset-name",
-					Cidrs: []string{"1.1.1.1/32"},
-				}},
+				Ipsets: []*pb.IPSet{
+					{
+						Name:     "ipset-set-name",
+						Type:     "list:set",
+						SetNames: []string{"set-1", "set-2"},
+					},
+					{
+						Name:  "ipset-net-name",
+						Type:  "hash:net",
+						Cidrs: []string{"0.0.0.0/24"},
+					},
+					{
+						Name: "ipset-net-port-name",
+						Type: "hash:net,port",
+						CidrAndPorts: []*pb.CidrAndPort{{
+							Cidr: "1.1.1.1/32",
+							Port: 80,
+						}},
+					},
+				},
 				ContainerId: "containerd://container-id",
 				EnterNS:     true,
 			})
 			Expect(err).To(BeNil())
 		})
 
-		It("should fail on get pid", func() {
-			const errorStr = "mock get pid error"
-			defer mock.With("TaskError", errors.New(errorStr))()
+		It("should fallback to sandbox when container lookup fails", func() {
+			defer mock.With("LoadContainerError", errors.New("container not found"))()
+			defer mock.With("pid", int(9527))()
+			defer mock.With("labels", map[string]string{
+				"io.kubernetes.pod.uid": "test-pod-uid-12345",
+			})()
+			defer mock.With("MockProcessBuild", func(context.Context, string, ...string) *exec.Cmd {
+				return exec.Command("echo", "mock command")
+			})()
+
 			_, err := s.FlushIPSets(context.TODO(), &pb.IPSetsRequest{
 				Ipsets: []*pb.IPSet{{
-					Name:  "ipset-name",
-					Cidrs: []string{"1.1.1.1/32"},
+					Name:  "ipset-net-name",
+					Type:  "hash:net",
+					Cidrs: []string{"0.0.0.0/24"},
+				}},
+				ContainerId: "containerd://container-id",
+				PodUid:      "test-pod-uid-12345",
+				EnterNS:     true,
+			})
+			Expect(err).To(BeNil())
+		})
+
+		It("should fail when both container and sandbox lookup fail", func() {
+			defer mock.With("LoadContainerError", errors.New("container not found"))()
+			defer mock.With("emptyContainers", true)()
+
+			_, err := s.FlushIPSets(context.TODO(), &pb.IPSetsRequest{
+				Ipsets: []*pb.IPSet{{
+					Name:  "ipset-net-name",
+					Type:  "hash:net",
+					Cidrs: []string{"0.0.0.0/24"},
+				}},
+				ContainerId: "containerd://container-id",
+				PodUid:      "test-pod-uid-12345",
+				EnterNS:     true,
+			})
+			Expect(err).ToNot(BeNil())
+			Expect(err.Error()).To(ContainSubstring("sandbox container not found"))
+		})
+
+		It("should fail on unknown type", func() {
+			_, err := s.FlushIPSets(context.TODO(), &pb.IPSetsRequest{
+				Ipsets: []*pb.IPSet{{
+					Name: "ipset-name",
+					Type: "foo:bar",
 				}},
 				ContainerId: "containerd://container-id",
 				EnterNS:     true,
 			})
 			Expect(err).ToNot(BeNil())
-			Expect(err.Error()).To(Equal(errorStr))
+			Expect(err.Error()).To(Equal("unexpected IP set type: foo:bar"))
 		})
 	})
 })

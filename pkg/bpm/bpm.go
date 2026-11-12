@@ -1,32 +1,37 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
+// Package bpm builds namespace-aware commands and manages background process startup, termination, and I/O pipes.
 package bpm
 
 import (
 	"context"
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
 	"sync"
 	"syscall"
 
+	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/shirou/gopsutil/process"
 
-	ctrl "sigs.k8s.io/controller-runtime"
+	"github.com/chaos-mesh/chaos-mesh/pkg/log"
 )
-
-var log = ctrl.Log.WithName("background-process-manager")
 
 type NsType string
 
@@ -34,6 +39,8 @@ const (
 	MountNS NsType = "mnt"
 	// uts namespace is not supported yet
 	// UtsNS   NsType = "uts"
+
+	// IpcNS identifies the IPC namespace for a managed command.
 	IpcNS NsType = "ipc"
 	NetNS NsType = "net"
 	PidNS NsType = "pid"
@@ -60,68 +67,187 @@ const (
 )
 
 // ProcessPair is an identifier for process
+// Keep compatible with v2.x
+// TODO: remove in v3.x
+//
+// Currently, the bpm locate managed processes by both PID and create time, because the OS may reuse PID, we must check the create time to avoid locating the wrong process.
+//
+// However, the two-step locating is messy and the create time may be imprecise (we have fixed a [relevant bug](https://github.com/shirou/gopsutil/pull/1204)).
+// In future version, we should completely remove the two-step locating and identify managed processes by UID only.
 type ProcessPair struct {
 	Pid        int
 	CreateTime int64
 }
 
-// BackgroundProcessManager manages all background processes
-type BackgroundProcessManager struct {
-	deathSig    *sync.Map
-	identifiers *sync.Map
+type Process struct {
+	UID string
+
+	// TODO: remove in v3.x
+	// store create time, to keep compatible with v2.x
+	Pair ProcessPair
+
+	Cmd   *ManagedCommand
+	Pipes Pipes
+
+	ctx     context.Context
+	stopped context.CancelFunc
 }
 
-// NewBackgroundProcessManager creates a background process manager
-func NewBackgroundProcessManager() BackgroundProcessManager {
-	return BackgroundProcessManager{
-		deathSig:    &sync.Map{},
-		identifiers: &sync.Map{},
+// Pipes provides access to a managed command's standard input and output.
+type Pipes struct {
+	Stdin  io.WriteCloser
+	Stdout io.ReadCloser
+}
+
+// BackgroundProcessManager manages all background processes
+type BackgroundProcessManager struct {
+	// deathChannel is a channel to receive UID of dead processes
+	deathChannel chan string
+
+	// wait group to await all processes exit
+	wg *sync.WaitGroup
+
+	// identifiers is a map to prevent duplicated processes
+	identifiers *sync.Map
+
+	// UID -> Process
+	processes *sync.Map
+
+	// TODO: remove in v3.x
+	// PidPair -> UID, to keep compatible with v2.x
+	pidPairToUID *sync.Map
+
+	rootLogger logr.Logger
+
+	metricsCollector *metricsCollector
+}
+
+func startProcess(cmd *ManagedCommand) (_ *Process, err error) {
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, errors.Wrap(err, "create stdin pipe")
 	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, errors.Wrap(err, "create stdout pipe")
+	}
+
+	err = cmd.Start()
+	if err != nil {
+		return nil, errors.Wrapf(err, "start command `%s`", cmd.String())
+	}
+	defer func() {
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+
+	newProcess := &Process{
+		UID:   uuid.NewString(),
+		Cmd:   cmd,
+		Pipes: Pipes{Stdin: stdin, Stdout: stdout},
+	}
+
+	// keep compatible with v2.x
+	// TODO: remove in v3.x
+	pid := cmd.Process.Pid
+	proc, err := process.NewProcess(int32(cmd.Process.Pid))
+	if err != nil {
+		return nil, errors.Wrapf(err, "get process state for pid %d", pid)
+	}
+
+	ct, err := proc.CreateTime()
+	if err != nil {
+		return nil, errors.Wrapf(err, "get process create time for pid %d", pid)
+	}
+
+	newProcess.Pair = ProcessPair{
+		Pid:        int(proc.Pid),
+		CreateTime: ct,
+	}
+	newProcess.ctx, newProcess.stopped = context.WithCancel(context.Background())
+	return newProcess, nil
+}
+
+func (p *Process) Stopped() <-chan struct{} {
+	return p.ctx.Done()
+}
+
+// StartBackgroundProcessManager creates a background process manager
+func StartBackgroundProcessManager(registry prometheus.Registerer, rootLogger logr.Logger) *BackgroundProcessManager {
+	backgroundProcessManager := &BackgroundProcessManager{
+		deathChannel:     make(chan string, 1),
+		wg:               &sync.WaitGroup{},
+		identifiers:      &sync.Map{},
+		processes:        &sync.Map{},
+		pidPairToUID:     &sync.Map{},
+		rootLogger:       rootLogger.WithName("background-process-manager"),
+		metricsCollector: nil,
+	}
+
+	go func() {
+		// return if deathChannel is closed
+		for uid := range backgroundProcessManager.deathChannel {
+			process, loaded := backgroundProcessManager.processes.LoadAndDelete(uid)
+			if loaded {
+				proc := process.(*Process)
+				backgroundProcessManager.pidPairToUID.Delete(proc.Pair)
+				if proc.Cmd.Identifier != nil {
+					backgroundProcessManager.identifiers.Delete(*proc.Cmd.Identifier)
+				}
+				proc.stopped()
+			}
+			backgroundProcessManager.wg.Done()
+		}
+	}()
+
+	if registry != nil {
+		backgroundProcessManager.metricsCollector = newMetricsCollector(backgroundProcessManager, registry)
+	}
+
+	return backgroundProcessManager
+}
+
+func (m *BackgroundProcessManager) recycle(uid string) {
+	m.deathChannel <- uid
 }
 
 // StartProcess manages a process in manager
-func (m *BackgroundProcessManager) StartProcess(cmd *ManagedProcess) error {
-	var identifierLock *sync.Mutex
+func (m *BackgroundProcessManager) StartProcess(ctx context.Context, cmd *ManagedCommand) (*Process, error) {
+	log := m.getLoggerFromContext(ctx)
 	if cmd.Identifier != nil {
-		lock, _ := m.identifiers.LoadOrStore(*cmd.Identifier, &sync.Mutex{})
-
-		identifierLock = lock.(*sync.Mutex)
-
-		identifierLock.Lock()
+		_, loaded := m.identifiers.LoadOrStore(*cmd.Identifier, true)
+		if loaded {
+			return nil, errors.Errorf("process with identifier %s is running", *cmd.Identifier)
+		}
 	}
 
-	err := cmd.Start()
+	process, err := startProcess(cmd)
 	if err != nil {
-		log.Error(err, "fail to start process")
-		return err
+		if cmd.Identifier != nil {
+			m.identifiers.Delete(*cmd.Identifier)
+		}
+		return nil, err
 	}
 
-	pid := cmd.Process.Pid
-	procState, err := process.NewProcess(int32(cmd.Process.Pid))
-	if err != nil {
-		return err
-	}
-	ct, err := procState.CreateTime()
-	if err != nil {
-		return err
+	m.processes.Store(process.UID, process)
+	m.pidPairToUID.Store(process.Pair, process.UID)
+	// end
+
+	if m.metricsCollector != nil {
+		m.metricsCollector.bpmControlledProcessTotal.Inc()
 	}
 
-	pair := ProcessPair{
-		Pid:        pid,
-		CreateTime: ct,
-	}
-
-	channel, _ := m.deathSig.LoadOrStore(pair, make(chan bool, 1))
-	deathChannel := channel.(chan bool)
-
-	log := log.WithValues("pid", pid)
+	m.wg.Add(1)
+	log = log.WithValues("uid", process.UID, "pid", process.Pair.Pid)
 
 	go func() {
 		err := cmd.Wait()
 		if err != nil {
-			err, ok := err.(*exec.ExitError)
-			if ok {
-				status := err.Sys().(syscall.WaitStatus)
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				status := exitErr.Sys().(syscall.WaitStatus)
 				if status.Signaled() && status.Signal() == syscall.SIGTERM {
 					log.Info("process stopped with SIGTERM signal")
 				}
@@ -129,88 +255,95 @@ func (m *BackgroundProcessManager) StartProcess(cmd *ManagedProcess) error {
 				log.Error(err, "process exited accidentally")
 			}
 		}
-
 		log.Info("process stopped")
-
-		deathChannel <- true
-		m.deathSig.Delete(pair)
-
-		if identifierLock != nil {
-			identifierLock.Unlock()
-			m.identifiers.Delete(*cmd.Identifier)
-		}
+		m.recycle(process.UID)
 	}()
 
-	return nil
+	return process, nil
+}
+
+func (m *BackgroundProcessManager) Shutdown(ctx context.Context) {
+	log := m.getLoggerFromContext(ctx)
+
+	m.processes.Range(func(_, value any) bool {
+		process := value.(*Process)
+		log := log.WithValues("uid", process.UID, "pid", process.Pair.Pid)
+		if err := process.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			log.Error(err, "send SIGTERM to process")
+			return true
+		}
+		return true
+	})
+	m.wg.Wait()
+	close(m.deathChannel)
+}
+
+func (m *BackgroundProcessManager) GetUID(pair ProcessPair) (string, bool) {
+	if uid, loaded := m.pidPairToUID.Load(pair); loaded {
+		return uid.(string), true
+	}
+	return "", false
+}
+
+func (m *BackgroundProcessManager) getProc(uid string) (*Process, bool) {
+	if proc, loaded := m.processes.Load(uid); loaded {
+		return proc.(*Process), true
+	}
+	return nil, false
+}
+
+func (m *BackgroundProcessManager) GetPipes(uid string) (Pipes, bool) {
+	proc, ok := m.getProc(uid)
+	if !ok {
+		return Pipes{}, false
+	}
+	return proc.Pipes, true
 }
 
 // KillBackgroundProcess sends SIGTERM to process
-func (m *BackgroundProcessManager) KillBackgroundProcess(ctx context.Context, pid int, startTime int64) error {
-	log := log.WithValues("pid", pid)
+func (m *BackgroundProcessManager) KillBackgroundProcess(ctx context.Context, uid string) error {
+	log := m.getLoggerFromContext(ctx)
 
-	p, err := os.FindProcess(int(pid))
-	if err != nil {
-		log.Error(err, "unreachable path. `os.FindProcess` will never return an error on unix")
-		return err
-	}
+	log = log.WithValues("uid", uid)
 
-	procState, err := process.NewProcess(int32(pid))
-	if err != nil {
-		// return successfully as the process has exited
-		return nil
-	}
-	ct, err := procState.CreateTime()
-	if err != nil {
-		log.Error(err, "fail to read create time")
-		// return successfully as the process has exited
-		return nil
-	}
-	if startTime != ct {
-		log.Info("process has already been killed", "startTime", ct, "expectedStartTime", startTime)
-		// return successfully as the process has exited
-		return nil
+	proc, loaded := m.getProc(uid)
+	if !loaded {
+		return errors.Errorf("failed to find process with uid %s", uid)
 	}
 
-	ppid, err := procState.Ppid()
-	if err != nil {
-		log.Error(err, "fail to read parent id")
-		// return successfully as the process has exited
-		return nil
-	}
-	if ppid != int32(os.Getpid()) {
-		log.Info("process has already been killed", "ppid", ppid)
-		// return successfully as the process has exited
-		return nil
+	if err := proc.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		return errors.Wrap(err, "send SIGTERM to process")
 	}
 
-	err = p.Signal(syscall.SIGTERM)
-
-	if err != nil && err.Error() != "os: process already finished" {
-		log.Error(err, "error while killing process")
-		return err
-	}
-
-	pair := ProcessPair{
-		Pid:        pid,
-		CreateTime: ct,
-	}
-	channel, ok := m.deathSig.Load(pair)
-	if ok {
-		deathChannel := channel.(chan bool)
-		select {
-		case <-deathChannel:
-		case <-ctx.Done():
-			return ctx.Err()
+	select {
+	case <-proc.Stopped():
+		log.Info("Successfully killed process")
+	case <-ctx.Done():
+		if err := ctx.Err(); err != nil {
+			return errors.Wrap(err, "context closed")
 		}
 	}
-
-	log.Info("Successfully killed process")
 	return nil
 }
 
+// GetIdentifiers finds all identifiers in BPM
+func (m *BackgroundProcessManager) GetIdentifiers() []string {
+	var identifiers []string
+	m.identifiers.Range(func(key, _ any) bool {
+		identifiers = append(identifiers, key.(string))
+		return true
+	})
+
+	return identifiers
+}
+
+func (m *BackgroundProcessManager) getLoggerFromContext(ctx context.Context) logr.Logger {
+	return log.EnrichLoggerWithContext(ctx, m.rootLogger)
+}
+
 // DefaultProcessBuilder returns the default process builder
-func DefaultProcessBuilder(cmd string, args ...string) *ProcessBuilder {
-	return &ProcessBuilder{
+func DefaultProcessBuilder(cmd string, args ...string) *CommandBuilder {
+	return &CommandBuilder{
 		cmd:        cmd,
 		args:       args,
 		nsOptions:  []nsOption{},
@@ -220,10 +353,11 @@ func DefaultProcessBuilder(cmd string, args ...string) *ProcessBuilder {
 	}
 }
 
-// ProcessBuilder builds a exec.Cmd for daemon
-type ProcessBuilder struct {
+// CommandBuilder builds a exec.Cmd for daemon
+type CommandBuilder struct {
 	cmd  string
 	args []string
+	env  []string
 
 	nsOptions []nsOption
 
@@ -231,7 +365,14 @@ type ProcessBuilder struct {
 	localMnt bool
 
 	identifier *string
+	stdin      io.ReadWriteCloser
+	stdout     io.ReadWriteCloser
+	stderr     io.ReadWriteCloser
 
+	oomScoreAdj int
+
+	// the context is used to kill the process and will be passed into
+	// `exec.CommandContext`
 	ctx context.Context
 }
 
@@ -240,8 +381,14 @@ func GetNsPath(pid uint32, typ NsType) string {
 	return fmt.Sprintf("%s/%d/ns/%s", DefaultProcPrefix, pid, string(typ))
 }
 
+// SetEnv sets the environment variables of the process
+func (b *CommandBuilder) SetEnv(key, value string) *CommandBuilder {
+	b.env = append(b.env, fmt.Sprintf("%s=%s", key, value))
+	return b
+}
+
 // SetNS sets the namespace of the process
-func (b *ProcessBuilder) SetNS(pid uint32, typ NsType) *ProcessBuilder {
+func (b *CommandBuilder) SetNS(pid uint32, typ NsType) *CommandBuilder {
 	return b.SetNSOpt([]nsOption{{
 		Typ:  typ,
 		Path: GetNsPath(pid, typ),
@@ -249,37 +396,75 @@ func (b *ProcessBuilder) SetNS(pid uint32, typ NsType) *ProcessBuilder {
 }
 
 // SetNSOpt sets the namespace of the process
-func (b *ProcessBuilder) SetNSOpt(options []nsOption) *ProcessBuilder {
+func (b *CommandBuilder) SetNSOpt(options []nsOption) *CommandBuilder {
 	b.nsOptions = append(b.nsOptions, options...)
 
 	return b
 }
 
 // SetIdentifier sets the identifier of the process
-func (b *ProcessBuilder) SetIdentifier(id string) *ProcessBuilder {
+//
+// The identifier is used to identify the process in BPM, to confirm only one identified process is running.
+// If one identified process is already running, new processes with the same identifier will be blocked by lock.
+func (b *CommandBuilder) SetIdentifier(id string) *CommandBuilder {
 	b.identifier = &id
 
 	return b
 }
 
 // EnablePause enables pause for process
-func (b *ProcessBuilder) EnablePause() *ProcessBuilder {
+func (b *CommandBuilder) EnablePause() *CommandBuilder {
 	b.pause = true
 
 	return b
 }
 
-func (b *ProcessBuilder) EnableLocalMnt() *ProcessBuilder {
+func (b *CommandBuilder) EnableLocalMnt() *CommandBuilder {
 	b.localMnt = true
 
 	return b
 }
 
 // SetContext sets context for process
-func (b *ProcessBuilder) SetContext(ctx context.Context) *ProcessBuilder {
+func (b *CommandBuilder) SetContext(ctx context.Context) *CommandBuilder {
 	b.ctx = ctx
 
 	return b
+}
+
+// SetStdin sets stdin for process
+func (b *CommandBuilder) SetStdin(stdin io.ReadWriteCloser) *CommandBuilder {
+	b.stdin = stdin
+
+	return b
+}
+
+// SetStdout sets stdout for process
+func (b *CommandBuilder) SetStdout(stdout io.ReadWriteCloser) *CommandBuilder {
+	b.stdout = stdout
+
+	return b
+}
+
+// SetStderr sets stderr for process
+func (b *CommandBuilder) SetStderr(stderr io.ReadWriteCloser) *CommandBuilder {
+	b.stderr = stderr
+
+	return b
+}
+
+// SetOOMScoreAdj sets the oom_score_adj for a process
+// oom_score_adj ranges from -1000 to 1000
+func (b *CommandBuilder) SetOOMScoreAdj(scoreAdj int) *CommandBuilder {
+	b.oomScoreAdj = scoreAdj
+	return b
+}
+
+func (b *CommandBuilder) getLoggerFromContext(ctx context.Context) logr.Logger {
+	// this logger is inherited from the global one
+	// TODO: replace it with a specific logger by passing in one or creating a new one
+	logger := log.L().WithName("background-process-manager.process-builder")
+	return log.EnrichLoggerWithContext(ctx, logger)
 }
 
 type nsOption struct {
@@ -287,8 +472,8 @@ type nsOption struct {
 	Path string
 }
 
-// ManagedProcess is a process which can be managed by backgroundProcessManager
-type ManagedProcess struct {
+// ManagedCommand is a process which can be managed by backgroundProcessManager
+type ManagedCommand struct {
 	*exec.Cmd
 
 	// If the identifier is not nil, process manager should make sure no other

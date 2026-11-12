@@ -1,148 +1,281 @@
-# Chaos Mesh
+# Chaos Mesh Helm Chart
 
-[Chaos Mesh](https://github.com/chaos-mesh/chaos-mesh) is a cloud-native Chaos Engineering platform that orchestrates chaos on Kubernetes environments.
+[Chaos Mesh](https://chaos-mesh.org) is a cloud-native Chaos Engineering platform for Kubernetes. This directory contains its Chart API v2 package, installable with Helm 4, for deploying the control plane, node daemon, dashboard, admission webhooks, CRDs, and optional supporting components.
 
-## Introduction
+For production prerequisites and platform-specific runtime settings, read the [official installation guide](https://chaos-mesh.org/docs/production-installation-using-helm/) before installing the chart.
 
-This chart bootstraps a [Chaos Mesh](https://github.com/chaos-mesh/chaos-mesh) deployment on a [Kubernetes](http://kubernetes.io) cluster using the [Helm](https://helm.sh) package manager.
+## Prerequisites
 
-## Deploy
+- Helm 4.3.1, matching the repository tooling and CI
+- A supported Kubernetes cluster and container runtime
+- Permission to create cluster-scoped resources, including CRDs, ClusterRoles, ClusterRoleBindings, and admission webhook configurations
+- Privileged workloads allowed on the nodes where `chaos-daemon` runs, unless you have deliberately configured a restricted capability set
 
-Before deploying Chaos Mesh, make sure you have installed the [Prerequisites](https://chaos-mesh.org/docs/user_guides/installation#prerequisites). And then follow the [install-by-helm](https://chaos-mesh.org/docs/user_guides/installation#install-by-helm) doc step by step.
+## Install
+
+### Install a released chart
+
+Choose a version from the [Chaos Mesh Helm repository](https://charts.chaos-mesh.org/) and pin it for reproducible installations:
+
+```bash
+helm repo add chaos-mesh https://charts.chaos-mesh.org
+helm repo update
+helm search repo chaos-mesh/chaos-mesh --versions
+helm install chaos-mesh chaos-mesh/chaos-mesh \
+  --namespace chaos-mesh \
+  --create-namespace \
+  --version <version>
+```
+
+### Install the chart from this repository
+
+Run the following command from the repository root when developing or testing local chart changes:
+
+```bash
+helm upgrade --install chaos-mesh ./helm/chaos-mesh \
+  --namespace chaos-mesh \
+  --create-namespace
+```
+
+The source chart defaults to the `latest` Chaos Mesh image tag. Set `images.tag` or the component-specific image tags when you need a reproducible or locally built image:
+
+```bash
+helm upgrade --install chaos-mesh ./helm/chaos-mesh \
+  --namespace chaos-mesh \
+  --create-namespace \
+  --set images.tag=<tag>
+```
+
+For non-trivial configuration, keep overrides in a file instead of a long list of `--set` flags:
+
+```bash
+helm upgrade --install chaos-mesh ./helm/chaos-mesh \
+  --namespace chaos-mesh \
+  --create-namespace \
+  --values my-values.yaml
+```
+
+Verify the installation with:
+
+```bash
+kubectl get pods --namespace chaos-mesh \
+  --selector app.kubernetes.io/instance=chaos-mesh
+```
+
+## Upgrade and uninstall
+
+Review the release notes and CRD changes before upgrading, then reuse the same values file used for installation:
+
+```bash
+helm upgrade chaos-mesh chaos-mesh/chaos-mesh \
+  --namespace chaos-mesh \
+  --version <version> \
+  --values my-values.yaml
+```
+
+Remove the Helm-managed resources with:
+
+```bash
+helm uninstall chaos-mesh --namespace chaos-mesh
+```
+
+Helm does not upgrade or delete CRDs placed in the chart's `crds/` directory. See [CRD lifecycle](#crd-lifecycle) before upgrading or removing an installation.
+
+## What the chart installs
+
+| Component | Workload | Default | Purpose |
+| --- | --- | --- | --- |
+| Controller manager | Deployment | Enabled, 3 replicas | Reconciles Chaos Mesh resources and serves admission webhooks |
+| Chaos daemon | DaemonSet | Enabled, privileged | Performs node- and container-level fault injection |
+| Dashboard | Deployment | Enabled | Provides the web UI and API |
+| DNS server | Deployment | Enabled | Supports DNSChaos |
+| Prometheus | Deployment | Disabled | Provides an optional in-chart Prometheus instance |
+| BPF kernel helper | DaemonSet sidecar | Disabled | Enables kernel fault injection through `chaos-kernel` |
+| Delve sidecars | Sidecars | Disabled | Support remote debugging of Chaos Mesh components |
+
+The chart also creates the required Services, RBAC resources, certificate Secrets or cert-manager resources, admission webhook configurations, and the CRDs stored in [`crds/`](crds/).
 
 ## Configuration
 
-The following tables list the configurable parameters of the Chaos Mesh chart and their default values.
+[`values.yaml`](values.yaml) is the primary commented configuration reference and the source of defaults. [`values.schema.json`](values.schema.json) is generated from it and is used by Helm to validate value types. Avoid duplicating every nested value in this README; update `values.yaml` and regenerate the schema when adding or changing a value.
 
-|                 Parameter                  |                                                     Description                                                      |                         Default                         |
-|--------------------------------------------|----------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------|
-| `nameOverride` |  | `` |
-| `fullnameOverride` |  | `` |
-| `clusterScoped`                            | whether chaos-mesh should manage kubernetes cluster wide chaos.Also see rbac.create and controllerManager.serviceAccount | `true` |
-| `rbac.create` |  | `true`                                                |
-| `timezone` | The timezone where controller-manager, chaos-daemon and dashboard uses. For example: `UTC`, `Asia/Shanghai` | `UTC` |
-| `enableProfiling` | A flag to enable pprof in controller-manager and chaos-daemon  | `true` |
-| `controllerManager.hostNetwork` | running chaos-controller-manager on host network | `false` |
-| `controllerManager.allowHostNetworkTesting`   | Allow testing on `hostNetwork` pods | `false` |
-| `controllerManager.serviceAccount` | The serviceAccount for chaos-controller-manager | `chaos-controller-manager` |
-| `controllerManager.priorityClassName` | Custom priorityClassName for using pod priorities | `` |
-| `controllerManager.replicaCount` | Replicas for chaos-controller-manager | `1` |
-| `controllerManager.image` | docker image for chaos-controller-manager  | `pingcap/chaos-mesh:latest` |
-| `controllerManager.imagePullPolicy` | Image pull policy | `Always` |
-| `controllerManager.service.type` | Kubernetes Service type | `ClusterIP` |
-| `controllerManager.resources` | CPU/Memory resource requests/limits for chaos-controller-manager pod | `requests: { cpu: "250m", memory: "512Mi" }, limits:{ cpu: "500m", memory: "1024Mi" }`   |
-| `controllerManager.nodeSelector` |  Node labels for chaos-controller-manager pod assignment | `{}` |
-| `controllerManager.tolerations` |  Toleration labels for chaos-controller-manager pod assignment | `[]` |
-| `controllerManager.affinity` |  Map of chaos-controller-manager node/pod affinities | `{}` |
-| `controllerManager.podAnnotations` |  Pod annotations of chaos-controller-manager | `{}`|
-| `controllerManager.enableFilterNamespace` | If enabled, only pods in the namespace annotated with `"chaos-mesh.org/inject": "enabled"` will be injected | false |
-| `chaosDaemon.image` | docker image for chaos-daemon | `pingcap/chaos-mesh:latest` |
-| `chaosDaemon.imagePullPolicy` | image pull policy | `Always` |
-| `chaosDaemon.grpcPort` | The port which grpc server listens on | `31767` |
-| `chaosDaemon.httpPort` | The port which http server listens on | `31766` |
-| `chaosDaemon.env` | chaosDaemon envs | `{}` |
-| `chaosDaemon.hostNetwork` | running chaosDaemon on host network | `false` |
-| `chaosDaemon.privileged` | Run chaos-daemon container in privileged mode. If it is set to false, chaos-daemon will be run in some specified capabilities. capabilities: SYS_PTRACE, NET_ADMIN, MKNOD, SYS_CHROOT, SYS_ADMIN, KILL, IPC_LOCK | `true` |
-| `chaosDaemon.priorityClassName` | Custom priorityClassName for using pod priorities | `` |
-| `chaosDaemon.podAnnotations` | Pod annotations of chaos-daemon | `{}` |
-| `chaosDaemon.runtime` | Runtime specifies which container runtime to use. Currently we only supports docker and containerd. | `docker` |
-| `chaosDaemon.socketPath` | Specifies the container runtime socket | `/var/run/docker.sock` |
-| `chaosDaemon.tolerations` | Toleration labels for chaos-daemon pod assignment | `[]` |
-| `chaosDaemon.resources` | CPU/Memory resource requests/limits for chaosDaemon container | `requests: { cpu: "250m", memory: "512Mi" }, limits:{ cpu: "500m", memory: "1024Mi" }`  |
-| `bpfki.create` | Enable chaos-kernel | `false` |
-| `bpfki.image` | Docker image for chaos-kernel | `pingcap/chaos-kernel:latest` |
-| `bpfki.imagePullPolicy` | Image pull policy | `Always` |
-| `bpfki.grpcPort` | The port which grpc server listens on | `50051` |
-| `bpfki.resources` | CPU/Memory resource requests/limits for chaos-kernel container | `requests: { cpu: "250m", memory: "512Mi" }, limits:{ cpu: "500m", memory: "1024Mi" }`  |
-| `dashboard.create` | Enable chaos-dashboard | `false` |
-| `dashboard.serviceAccount` | The serviceAccount for chaos-dashboard  | `chaos-dashboard` |
-| `dashboard.priorityClassName` | Custom priorityClassName for using pod priorities | `` |
-| `dashboard.image` | Docker image for chaos-dashboard | `pingcap/chaos-dashboard:latest` |
-| `dashboard.imagePullPolicy` | Image pull policy | `Always` |
-| `dashboard.nodeSelector` | Node labels for chaos-dashboard  pod assignment | `{}` |
-| `dashboard.tolerations` | Toleration labels for chaos-dashboard pod assignment | `[]` |
-| `dashboard.affinity` | Map of chaos-dashboard node/pod affinities | `{}` |
-| `dashboard.podAnnotations` | Deployment chaos-dashboard annotations | `{}` |
-| `dashboard.resources` | CPU/Memory resource requests/limits for chaos-dashboard pod  | `requests: { cpu: "250m", memory: "512Mi" }, limits:{ cpu: "500m", memory: "1024Mi" }`  |
-| `dashboard.persistentVolume.enable` | Enable storage volume for chaos-dashboard. If you are using SQLite as your DB for Chaos Dashboard, it is recommended to enable persistence| `false` |
-| `dashboard.persistentVolume.existingClaim` | Use the existing PVC for persisting chaos event| `` |
-| `dashboard.persistentVolume.size` | Chaos Dashboard data Persistent Volume size | `8Gi` |
-| `dashboard.persistentVolume.storageClassName` | Chaos Dashboard data Persistent Volume Storage Class | `standard` |
-| `dashboard.persistentVolume.mountPath` | Chaos Dashboard data Persistent Volume mount root path | `/data` |
-| `dashboard.persistentVolume.subPath` | Subdirectory of  Chaos Dashboard data Persistent Volume to mount | `` |
-| `dashboard.service.annotations` | Service annotations for the dashboard | `{}` |
-| `dashboard.service.type`              | Service type of the service created for exposing the dashboard                             | `NodePort`     |
-| `dashboard.service.clusterIP`         | Set the `clusterIP` of the dashboard service if the type is `ClusterIP` | `nil`           |
-| `dashboard.service.nodePort`          | Set the `nodePort` of the dashboard service if the type is `NodePort`  | `nil`           |
-| `dashboard.env` | The keys within the `env` map are mounted as environment variables on the Chaos Dashboard pod | `` |
-| `dashboard.env.LISTEN_HOST` | | `0.0.0.0` |
-| `dashboard.env.LISTEN_PORT` | | `2333` |
-| `dashboard.env.DATABASE_DRIVER`| The db drive used for Chaos Dashboard, support db: sqlite3, mysql| `sqlite3` |
-| `dashboard.env.DATABASE_DATASOURCE`| The db dsn used for Chaos Dashboard | `/data/core.sqlite` |
-| `dashboard.ingress.enabled`                   | Enable the use of the ingress controller to access the dashboard                         | `false`             |
-| `dashboard.ingress.certManager`               | Enable Cert-Manager for ingress                                                      | `false`             |
-| `dashboard.ingress.annotations`               | Annotations for the dashboard Ingress                                                   | `{}`                |
-| `dashboard.ingress.hosts[0].name`             | Hostname to your dashboard installation                                                 | `dashboard.local`     |
-| `dashboard.ingress.hosts[0].paths`            | Path within the url structure                                                         | `["/"]`             |
-| `dashboard.ingress.hosts[0].tls`              | Utilize TLS backend in ingress                                                        | `false`             |
-| `dashboard.ingress.hosts[0].tlsHosts`         | Array of TLS hosts for ingress record (defaults to `ingress.hosts[0].name` if `nil`)  | `nil`               |
-| `dashboard.ingress.hosts[0].tlsSecret`        | TLS Secret (certificates)                                                             | `dashboard.local-tls` |
-| `prometheus.create` | Enable prometheus | `false` |
-| `prometheus.serviceAccount` | The serviceAccount for prometheus | `prometheus` |
-| `prometheus.priorityClassName` | Custom priorityClassName for using pod priorities | `` |
-| `prometheus.image` | Docker image for prometheus | `prom/prometheus:v2.15.2` |
-| `prometheus.imagePullPolicy` | Image pull policy | `IfNotPresent` |
-| `prometheus.nodeSelector` | Node labels for prometheus pod assignment | `{}` |
-| `prometheus.tolerations` | Toleration labels for prometheus pod assignment | `[]` |
-| `prometheus.affinity` | Map of prometheus node/pod affinities | `{}` |
-| `prometheus.podAnnotations` | Deployment prometheus annotations | `{}` |
-| `prometheus.resources` | CPU/Memory resource requests/limits for prometheus pod |  `requests: { cpu: "250m", memory: "512Mi" }, limits:{ cpu: "500m", memory: "1024Mi" }`  |
-| `prometheus.service.type` | Kubernetes Service type | `ClusterIP` |
-| `prometheus.volume.storage` | | `2Gi` |
-| `prometheus.volume.storageClassName` | | `standard` |
-| `webhook.certManager.enabled` | Setup the webhook using cert-manager | `false` |
-| `webhook.FailurePolicy` | Defines how unrecognized errors and timeout errors from the admission webhook are handled | `Ignore` |
-| `webhook.CRDS` | Define a list of chaos types that implement admission webhook | `[podchaos,iochaos,timechaos,networkchaos,kernelchaos]` |
+The most important top-level settings are summarized below.
 
-Specify each parameter using the `--set key=value[,key=value]` argument to `helm install`. For example,
+| Value | Default | Purpose |
+| --- | --- | --- |
+| `images.registry` | `cr.chaos-mesh.dev` | Global registry used unless a component overrides it |
+| `images.tag` | `latest` | Global image tag used unless a component overrides it |
+| `imagePullSecrets` | `[]` | Registry credentials added to component Pods |
+| `clusterScoped` | `true` | Controls cluster-wide versus namespace-scoped reconciliation and RBAC |
+| `rbac.create` | `true` | Creates chart RBAC resources and, subject to component settings, ServiceAccounts |
+| `timezone` | `UTC` | Sets the component time zone |
+| `enableProfiling` | `true` | Enables profiling endpoints in supported components |
+| `extraObjects` | `[]` | Renders additional Kubernetes objects with chart context |
 
-```console
-# helm 2.X
-helm install helm/chaos-mesh --name=chaos-mesh --namespace=chaos-testing --set dashboard.create=true
-# helm 3.X
-helm install chaos-mesh helm/chaos-mesh --namespace=chaos-testing --set dashboard.create=true
+Key component settings:
+
+| Value | Default | Purpose |
+| --- | --- | --- |
+| `controllerManager.replicaCount` | `3` | Controller manager replicas |
+| `controllerManager.imagePullPolicy` | `IfNotPresent` | Controller manager image pull policy |
+| `controllerManager.targetNamespace` | `chaos-mesh` | Namespace watched when `clusterScoped=false` |
+| `controllerManager.enableFilterNamespace` | `false` | Limits injection to namespaces annotated with `chaos-mesh.org/inject=enabled` |
+| `controllerManager.enabledControllers` | `["*"]` | Controllers to start |
+| `controllerManager.enabledWebhooks` | `["*"]` | Webhooks to start |
+| `controllerManager.leaderElection.enabled` | `true` | Enables controller leader election |
+| `controllerManager.localHelmChart.enabled` | `false` | Mounts a local chart for offline multi-cluster installation |
+| `chaosDaemon.imagePullPolicy` | `IfNotPresent` | Chaos daemon image pull policy |
+| `chaosDaemon.runtime` | `docker` | Container runtime adapter |
+| `chaosDaemon.socketPath` | `/var/run/docker.sock` | Host container runtime socket |
+| `chaosDaemon.privileged` | `true` | Runs the daemon as a privileged container |
+| `chaosDaemon.mtls.enabled` | `true` | Enables mTLS between the controller manager and daemon |
+| `chaosDaemon.resourceProfile` | `light` | Resource baseline: `light`, `standard`, or `intensive` |
+| `dashboard.create` | `true` | Installs the dashboard |
+| `dashboard.securityMode` | `true` | Requires dashboard credentials |
+| `dashboard.service.type` | `NodePort` | Dashboard Service type |
+| `dashboard.persistentVolume.enabled` | `false` | Persists the default SQLite database |
+| `dashboard.gcpSecurityMode.enabled` | `false` | Enables GCP authentication |
+| `dashboard.oidcSecurityMode.enabled` | `false` | Enables generic OIDC authentication |
+| `dashboard.ingress.enabled` | `false` | Creates a dashboard Ingress |
+| `dashboard.httpRoute.enabled` | `false` | Creates a dashboard Gateway API HTTPRoute |
+| `dnsServer.create` | `true` | Installs the DNSChaos server |
+| `prometheus.create` | `false` | Installs the bundled Prometheus instance |
+| `serviceMonitor.enabled` | `false` | Creates Prometheus Operator ServiceMonitors |
+| `serviceMonitor.additionalLabels` | `{}` | Extra ServiceMonitor labels, e.g. the one Prometheus selects on |
+| `serviceMonitor.interval` | `""` | Scrape interval; empty uses the operator default |
+| `webhook.certManager.enabled` | `false` | Uses cert-manager for webhook and daemon certificates |
+| `bpfki.create` | `false` | Enables the `chaos-kernel` helper |
+| `chaosDlv.enable` | `false` | Adds the Delve debugging sidecar |
+
+Component image settings follow the same pattern:
+
+```yaml
+images:
+  registry: cr.chaos-mesh.dev
+  tag: latest
+
+controllerManager:
+  image:
+    registry: "" # Empty means images.registry.
+    repository: chaos-mesh/chaos-mesh
+    tag: "" # Empty means images.tag.
 ```
 
-The above command enable the Chaos Dashboard.
+`cr.chaos-mesh.dev` is a proxy in front of `ghcr.io` that serves the same images. To pull from GitHub Container Registry directly, set `--set images.registry=ghcr.io`.
 
-Alternatively, a YAML file that specifies the values for the parameters can be provided while installing the chart. For example,
+## Common configurations
 
-```console
-# helm 2.X
-helm install helm/chaos-mesh --name=chaos-mesh --namespace=chaos-testing -f values.yaml
-# helm 3.X
-helm install chaos-mesh helm/chaos-mesh --namespace=chaos-testing -f values.yaml
+### Container runtime
+
+The default runtime is Docker. Configure both the runtime and its host socket for containerd or CRI-O:
+
+```yaml
+chaosDaemon:
+  runtime: containerd
+  socketPath: /run/containerd/containerd.sock
 ```
 
-> **Tip**: You can use the default [values.yaml](values.yaml)
+```yaml
+chaosDaemon:
+  runtime: crio
+  socketPath: /var/run/crio/crio.sock
+```
 
-## Configuration and installation details
+### Namespace-scoped mode
 
-### Using cert-manager for certificate management
+Set `clusterScoped=false` to restrict reconciliation and target bindings to one namespace. CRDs and several control-plane resources remain cluster-scoped and still require cluster-level installation permissions.
 
-[Cert-manager](https://github.com/jetstack/cert-manager) may be the default in the K8s world for certificate management now.If you want to install Cert-manager using the [Helm](https://helm.sh) package manager, please refer to the [official documents](https://github.com/jetstack/cert-manager/tree/master/deploy/charts/cert-manager).
+The current DNS RBAC template also reads `dnsServer.targetNamespace`, although that value is not yet declared in `values.yaml`. Pass it explicitly and keep it identical to `controllerManager.targetNamespace`:
 
-Example for deploy Cert-manager
+```yaml
+clusterScoped: false
+
+controllerManager:
+  targetNamespace: testing
+
+dnsServer:
+  targetNamespace: testing
+```
+
+To keep cluster-scoped operation while allowing injection only in opted-in namespaces, use `controllerManager.enableFilterNamespace=true` and annotate each allowed namespace:
 
 ```bash
-kubectl create namespace cert-manager
-kubectl apply --validate=false -f https://raw.githubusercontent.com/jetstack/cert-manager/v0.13.1/deploy/manifests/00-crds.yaml
-helm repo add jetstack https://charts.jetstack.io
-helm repo update
-helm install cert-manager jetstack/cert-manager --namespace cert-manager --version v0.13.1
+kubectl annotate namespace testing chaos-mesh.org/inject=enabled
 ```
 
-In case you want to using Cert-manager for certificate management, you can use the `webhook.certManager.enabled` property.
+### Chaos daemon resources
+
+`chaosDaemon.resourceProfile` supplies a baseline that can be partially overridden by `chaosDaemon.resources`:
+
+| Profile     | Requests               | Limits                |
+| ----------- | ---------------------- | --------------------- |
+| `light`     | 100m CPU, 256Mi memory | None                  |
+| `standard`  | 250m CPU, 512Mi memory | None                  |
+| `intensive` | 500m CPU, 1Gi memory   | 1000m CPU, 2Gi memory |
+
+```yaml
+chaosDaemon:
+  resourceProfile: standard
+  resources:
+    limits:
+      memory: 1Gi
+```
+
+An unsupported non-empty profile causes chart rendering to fail. Set the profile to an empty string if you want `chaosDaemon.resources` to be the only source of resource settings.
+
+### Dashboard persistence and database credentials
+
+The dashboard uses SQLite by default. Enable `dashboard.persistentVolume.enabled` to retain that database across Pod replacement, or configure an external database. Prefer a Secret over putting a database DSN directly in values:
+
+```yaml
+dashboard:
+  databaseSecretName: chaos-dashboard-database
+```
+
+The referenced Secret must contain a `DATABASE_DATASOURCE` key. `dashboard.env.DATABASE_DATASOURCE` remains available for compatibility but is deprecated.
+
+### Dashboard authentication
+
+GCP and generic OIDC authentication are configured under `dashboard.gcpSecurityMode` and `dashboard.oidcSecurityMode`. Each supports inline credentials or an existing Secret. The existing GCP Secret must provide `GCP_CLIENT_ID` and `GCP_CLIENT_SECRET`; the OIDC Secret must provide `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_ISSUER_URL`.
+
+To keep the client ID and issuer URL in values while reading the client secret from a custom Secret key, use `dashboard.envFollowKubernetesPattern`:
+
+```yaml
+dashboard:
+  oidcSecurityMode:
+    enabled: true
+    clientId: dashboard-client
+    issuerUrl: https://issuer.example.com
+  envFollowKubernetesPattern:
+    - name: OIDC_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: dashboard-auth
+          key: client-secret
+```
+
+`dashboard.envFollowKubernetesPattern` accepts Kubernetes `EnvVar` entries. `dashboard.env` accepts scalar values and converts names to uppercase. Explicit entries in either field replace the corresponding inline `GCP_CLIENT_ID`, `GCP_CLIENT_SECRET`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, or `OIDC_ISSUER_URL` variable. Define each name only once across these two fields.
+
+To import additional environment variables from Secrets or ConfigMaps, set `dashboard.envFrom` to a list of Kubernetes `EnvFromSource` entries:
+
+```yaml
+dashboard:
+  envFrom:
+    - configMapRef:
+        name: dashboard-config
+    - secretRef:
+        name: dashboard-extra
+```
+
+These entries are appended after the authentication `existingSecret` references. Variables in `env`, including generated inline authentication values, take precedence over `envFrom`. Use `envFollowKubernetesPattern` for individual authentication credentials or `existingSecret` for a complete authentication configuration.
+
+For an OIDC provider that uses a private CA, set `dashboard.oidcSecurityMode.caBundlePEM`. The chart creates and mounts a CA Secret only when this value is non-empty.
+
+### Certificate management
+
+By default, Helm generates self-signed certificates and stores them in Secrets. You can instead supply `webhook.caBundlePEM`, `webhook.crtPEM`, and `webhook.keyPEM` together.
+
+To delegate certificate creation to cert-manager, install cert-manager and its CRDs first, following the [cert-manager installation guide](https://cert-manager.io/docs/installation/helm/), then set:
 
 ```yaml
 webhook:
@@ -150,18 +283,144 @@ webhook:
     enabled: true
 ```
 
-The webhook's cert and the [MutatingAdmissionWebhook](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#mutatingadmissionwebhook)'s `caBundle` property will be managed by the [Certificate](https://cert-manager.io/docs/usage/certificate/) of Cert-manager.
+The chart then creates namespaced Issuers and Certificates for the admission webhook and daemon mTLS Secrets. Do not use Helm's `--dry-run` alone to validate this mode because Helm cannot discover CRDs that are not installed in the cluster; use `helm template` with the relevant API version when testing locally.
 
-In case your Cert-manager's option `enable-certificate-owner-ref` is true, it means that deleting a certificate resource will also delete its secret.
+### Pod Security Policy compatibility
 
-The Cert-manager's option `enable-certificate-owner-ref` refer to the following:
+`chaosDaemon.podSecurityPolicy` is a legacy compatibility option and defaults to `false`. Enabling it renders a `policy/v1beta1` PodSecurityPolicy, which is unavailable in modern Kubernetes releases. Prefer the security controls supported by your cluster.
 
-> https://github.com/jetstack/cert-manager/issues/296
->
-> https://github.com/jetstack/cert-manager/pull/819
+### Gateway API HTTPRoute
 
-You can install your Cert-manager looks like this.
+As an alternative to `dashboard.ingress`, the dashboard can be exposed through a Gateway API `HTTPRoute`. It requires the `gateway.networking.k8s.io/v1` CRDs and an existing Gateway, which `parentRefs` must reference. TLS is configured on the Gateway listener rather than on the route.
+
+```yaml
+dashboard:
+  httpRoute:
+    enabled: true
+    parentRefs:
+      - name: gateway
+        namespace: gateway-system
+        sectionName: https
+    hostnames:
+      - dashboard.example.com
+    paths:
+      - type: PathPrefix
+        value: /
+```
+
+`paths` is a list of up to 64 Gateway API `HTTPPathMatch` objects with `type` and `value` fields. Each entry requires `value`. An omitted `type` defaults to `PathPrefix`. The default list is `[{type: PathPrefix, value: /}]`. An empty list uses the same default. Supported types are `PathPrefix`, `Exact`, and `RegularExpression`. Support for `RegularExpression` depends on the Gateway implementation.
+
+When the Gateway is in another namespace, its listener must allow routes from the release namespace.
+
+### Prometheus Operator ServiceMonitors
+
+The chart annotates its Services with `prometheus.io/scrape`, which only a Prometheus configured for annotation-based service discovery acts on. Prometheus Operator ignores those annotations and discovers targets through `ServiceMonitor` resources, so set `serviceMonitor.enabled` when running the operator. It requires the `monitoring.coreos.com/v1` ServiceMonitor CRD and is disabled by default.
+
+```yaml
+serviceMonitor:
+  enabled: true
+  # The label the Prometheus instance selects ServiceMonitors on.
+  additionalLabels:
+    release: kube-prometheus-stack
+  interval: 30s
+```
+
+One ServiceMonitor is created per component — controller manager, chaos daemon, dashboard, and DNS server — each pointed at that component's metrics port. Components the chart does not install are skipped, and each can be turned off individually:
+
+```yaml
+serviceMonitor:
+  enabled: true
+  dnsServer:
+    enabled: false
+```
+
+`interval`, `scrapeTimeout`, `scheme`, `tlsConfig`, `honorLabels`, `metricRelabelings`, and `relabelings` can be set globally and overridden per component, so one component can be scraped differently from the rest:
+
+```yaml
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  metricRelabelings:
+    - sourceLabels: [__name__]
+      regex: go_.*
+      action: drop
+  chaosDaemon:
+    # The daemon runs on every node; scrape it less often than the rest.
+    interval: 1m
+```
+
+Settings left empty are omitted from the rendered resource so the operator applies its own defaults.
+
+### Extra objects
+
+`extraObjects` accepts arbitrary Kubernetes objects. String values inside each object are evaluated with Helm's `tpl` function, so chart values and release metadata can be referenced:
+
+```yaml
+extraObjects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: "{{ .Release.Name }}-extra"
+    data:
+      environment: test
+```
+
+## CRD lifecycle
+
+The CRDs in [`crds/`](crds/) are installed before chart templates on the first `helm install`. If a CRD already exists, Helm leaves it in place. Helm does not template, upgrade, or delete CRDs from this directory.
+
+Consequences for operators:
+
+- Review and apply changed CRDs separately before upgrading the controller workloads.
+- `helm uninstall` intentionally leaves the CRDs and all Chaos Mesh custom resources in the cluster.
+- Treat CRD deletion as a separate, destructive operation; deleting a CRD also deletes its custom resources.
+- `helm install --skip-crds` is appropriate only when CRDs are managed through another process.
+
+When testing this source tree, update installed CRDs with:
 
 ```bash
-helm install cert-manager jetstack/cert-manager --namespace cert-manager --version v0.13.1 --set extraArgs={"--enable-certificate-owner-ref"="true"}
+kubectl apply --filename helm/chaos-mesh/crds/
 ```
+
+## Developing the chart
+
+Chart files have distinct sources of truth:
+
+- `values.yaml` defines documented defaults and supported values.
+- `values.schema.json` is generated from `values.yaml`; do not update it by hand.
+- `templates/` contains rendered Kubernetes resources and helpers.
+- `crds/` is generated from API definitions under `api/` and `config/crd/bases/`.
+- `Chart.yaml` contains chart metadata. Its `version` and `appVersion` are development placeholders in this source tree, not released version numbers.
+
+Run focused checks for the part you changed:
+
+```bash
+helm lint helm/chaos-mesh
+helm template chaos-mesh helm/chaos-mesh --namespace chaos-mesh
+```
+
+Render every conditional path affected by a change. For example:
+
+```bash
+helm template chaos-mesh helm/chaos-mesh \
+  --namespace chaos-mesh \
+  --set clusterScoped=false \
+  --set controllerManager.targetNamespace=testing \
+  --set dnsServer.targetNamespace=testing
+
+helm template chaos-mesh helm/chaos-mesh \
+  --namespace chaos-mesh \
+  --set webhook.certManager.enabled=true \
+  --api-versions cert-manager.io/v1
+```
+
+After changing `values.yaml`, regenerate and inspect the schema:
+
+```bash
+make helm-values-schema
+git diff -- helm/chaos-mesh/values.schema.json
+```
+
+After changing CRD API definitions, run the relevant generation target. `make generate` includes CRD generation and refreshes `config/crd/bases/`, `helm/chaos-mesh/crds/`, and `manifests/crd.yaml`; inspect those outputs together.
+
+The full `make check` target is the final repository-wide verification. During chart development, prefer the focused Helm commands above plus tests for the code you changed, then run `make check` before submitting the final change when practical.

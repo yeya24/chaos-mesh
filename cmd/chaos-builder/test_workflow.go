@@ -4,24 +4,27 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package main
 
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
 // struct workflowTestCodeGenerator will render content of one file for testing the coupling with chaosKindMap
 type workflowTestCodeGenerator struct {
-	// name of each Kind of chaos, for example: PodChaos, IoChaos, DNSChaos
+	// name of each Kind of chaos, for example: PodChaos, IOChaos, DNSChaos
 	chaosTypes []string
 }
 
@@ -39,18 +42,18 @@ func (it *workflowTestCodeGenerator) Render() string {
 	"testing"
 )
 `
-	testMethods := ""
+	var testMethods strings.Builder
 	for _, typeName := range it.chaosTypes {
-		testMethods += generateTestTemplateEntry(typeName)
+		testMethods.WriteString(generateTestTemplateEntry(typeName))
 	}
 	return fmt.Sprintf(`%s
 // this file tests the coupling with all kinds map and each TemplateType
 %s
 %s
 `,
-		codeHeader,
+		boilerplate,
 		imports,
-		testMethods,
+		testMethods.String(),
 	)
 }
 

@@ -1,0 +1,229 @@
+// Copyright 2021 Chaos Mesh Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+package chaosdaemon
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"sync"
+
+	containerderrdefs "github.com/containerd/errdefs"
+	"github.com/pkg/errors"
+
+	"github.com/chaos-mesh/chaos-mesh/pkg/bpm"
+	pb "github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/pb"
+	"github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/tproxyconfig"
+)
+
+const (
+	tproxyBin = "/usr/local/bin/tproxy"
+	pathEnv   = "PATH"
+)
+
+type stdioTransport struct {
+	uid    string
+	locker *sync.Map
+	pipes  bpm.Pipes
+}
+
+func (t *stdioTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
+	if _, loaded := t.locker.LoadOrStore(t.uid, true); loaded {
+		return &http.Response{
+			StatusCode: http.StatusLocked,
+			Status:     http.StatusText(http.StatusLocked),
+			Body:       io.NopCloser(bytes.NewBufferString("")),
+			Request:    req,
+		}, nil
+	}
+	defer t.locker.Delete(t.uid)
+	if t.pipes.Stdin == nil {
+		return nil, errors.New("fail to get stdin of process")
+	}
+	if t.pipes.Stdout == nil {
+		return nil, errors.New("fail to get stdout of process")
+	}
+
+	err = req.Write(t.pipes.Stdin)
+	if err != nil {
+		return
+	}
+
+	resp, err = http.ReadResponse(bufio.NewReader(t.pipes.Stdout), req)
+	return
+}
+
+//revive:disable-next-line:var-naming Preserve the generated protobuf RPC contract.
+func (s *DaemonServer) ApplyHttpChaos(ctx context.Context, in *pb.ApplyHttpChaosRequest) (*pb.ApplyHttpChaosResponse, error) {
+	log := s.getLoggerFromContext(ctx)
+	log.Info("applying http chaos")
+
+	if in.InstanceUid == "" {
+		if uid, ok := s.backgroundProcessManager.GetUID(bpm.ProcessPair{Pid: int(in.Instance), CreateTime: in.StartTime}); ok {
+			in.InstanceUid = uid
+		}
+	}
+
+	if _, ok := s.backgroundProcessManager.GetPipes(in.InstanceUid); !ok {
+		if in.InstanceUid != "" {
+			// chaos daemon may restart, create another tproxy instance
+			if err := s.backgroundProcessManager.KillBackgroundProcess(ctx, in.InstanceUid); err != nil {
+				// ignore this error
+				log.Error(err, "kill background process", "uid", in.InstanceUid)
+			}
+		}
+
+		// set uid internally
+		if err := s.createHTTPChaos(ctx, in); err != nil {
+			return nil, errors.Wrap(err, "create http chaos")
+		}
+	}
+
+	resp, err := s.applyHTTPChaos(ctx, in)
+	if err != nil {
+		if killError := s.backgroundProcessManager.KillBackgroundProcess(ctx, in.InstanceUid); killError != nil {
+			log.Error(killError, "kill tproxy", "uid", in.InstanceUid)
+		}
+		return nil, errors.Wrap(err, "apply config")
+	}
+	return resp, err
+}
+
+func (s *DaemonServer) applyHTTPChaos(ctx context.Context, in *pb.ApplyHttpChaosRequest) (*pb.ApplyHttpChaosResponse, error) {
+	log := s.getLoggerFromContext(ctx)
+
+	pipes, ok := s.backgroundProcessManager.GetPipes(in.InstanceUid)
+	if !ok {
+		return nil, errors.Errorf("fail to get process(%s)", in.InstanceUid)
+	}
+
+	transport := &stdioTransport{
+		uid:    in.InstanceUid,
+		locker: s.tproxyLocker,
+		pipes:  pipes,
+	}
+
+	var rules []tproxyconfig.PodHTTPChaosBaseRule
+	err := json.Unmarshal([]byte(in.Rules), &rules)
+	if err != nil {
+		return nil, errors.Wrap(err, "unmarshal rules")
+	}
+
+	log.Info("the length of actions", "length", len(rules))
+
+	httpChaosSpec := tproxyconfig.Config{
+		ProxyPorts: in.ProxyPorts,
+		Rules:      rules,
+	}
+
+	if len(in.Tls) != 0 {
+		httpChaosSpec.TLS = new(tproxyconfig.TLSConfig)
+		err = json.Unmarshal([]byte(in.Tls), httpChaosSpec.TLS)
+		if err != nil {
+			return nil, errors.Wrap(err, "unmarshal tls config")
+		}
+	}
+
+	config, err := json.Marshal(&httpChaosSpec)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, "/", bytes.NewReader(config))
+	if err != nil {
+		return nil, errors.Wrap(err, "create http request")
+	}
+
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "send http request")
+	}
+
+	log.Info("http chaos applied")
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.Wrap(err, "read response body")
+	}
+
+	return &pb.ApplyHttpChaosResponse{
+		Instance:    int64(in.Instance),
+		InstanceUid: in.InstanceUid,
+		StartTime:   in.StartTime,
+		StatusCode:  int32(resp.StatusCode),
+		Error:       string(body),
+	}, nil
+}
+
+func (s *DaemonServer) createHTTPChaos(ctx context.Context, in *pb.ApplyHttpChaosRequest) error {
+	pid, processIdentifier, err := s.getPIDForHTTPChaos(ctx, in.ContainerId, in.PodUid)
+	if err != nil {
+		return err
+	}
+	processBuilder := bpm.DefaultProcessBuilder(tproxyBin, "-i", "-vv").
+		EnableLocalMnt().
+		SetIdentifier(fmt.Sprintf("tproxy-%s", processIdentifier)).
+		SetEnv(pathEnv, os.Getenv(pathEnv))
+
+	if in.EnterNS {
+		processBuilder = processBuilder.SetNS(pid, bpm.PidNS).SetNS(pid, bpm.NetNS)
+	}
+
+	cmd := processBuilder.Build(ctx)
+	cmd.Stderr = os.Stderr
+
+	proc, err := s.backgroundProcessManager.StartProcess(ctx, cmd)
+	if err != nil {
+		return errors.Wrapf(err, "execute command(%s)", cmd)
+	}
+
+	in.Instance = int64(proc.Pair.Pid)
+	in.StartTime = proc.Pair.CreateTime
+	in.InstanceUid = proc.UID
+	return nil
+}
+
+func (s *DaemonServer) getPIDForHTTPChaos(ctx context.Context, containerID, podUID string) (uint32, string, error) {
+	if containerID == "" {
+		return 0, "", errors.New("container ID is empty")
+	}
+
+	pid, containerErr := s.crClient.GetPidFromContainerID(ctx, containerID)
+	if containerErr == nil {
+		return pid, containerID, nil
+	}
+	if !containerderrdefs.IsNotFound(containerErr) {
+		return 0, "", errors.Wrapf(containerErr, "get PID of container(%s)", containerID)
+	}
+	if podUID == "" {
+		return 0, "", errors.Wrapf(containerErr, "get PID of container(%s); pod UID is empty, cannot fall back to sandbox", containerID)
+	}
+
+	log := s.getLoggerFromContext(ctx)
+	log.Info("container PID unavailable, falling back to sandbox", "containerID", containerID, "error", containerErr.Error())
+
+	pid, sandboxErr := s.crClient.GetSandboxPidFromPodUID(ctx, podUID)
+	if sandboxErr != nil {
+		return 0, "", errors.Wrapf(sandboxErr, "get sandbox PID for pod(%s) after getting PID of container(%s) failed: %v", podUID, containerID, containerErr)
+	}
+
+	return pid, fmt.Sprintf("pod-%s", podUID), nil
+}

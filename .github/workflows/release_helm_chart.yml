@@ -2,20 +2,31 @@ name: Release helm chart files
 
 on:
   push:
-    tags: 'chart-*'
+    tags:
+      - "chart-*"
+
+permissions: read-all
 
 jobs:
   release-chart:
+    if: github.repository_owner == 'chaos-mesh'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v7
+      - name: Extract version
+        id: extract_version
+        run: |
+          VERSION=${GITHUB_REF_NAME##chart-}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
       - name: Publish Helm chart
         uses: stefanprodan/helm-gh-pages@master
         with:
-          token: ${{ secrets.CR_TOKEN }}
+          token: ${{ secrets.RELEASE_HELM_CHART_TOKEN }}
+          helm_version: "4.3.1"
           charts_dir: helm
           charts_url: https://charts.chaos-mesh.org
           owner: chaos-mesh
           repository: charts
           branch: gh-pages
-
+          app_version: ${{ steps.extract_version.outputs.version }}
+          chart_version: ${{ steps.extract_version.outputs.version }}

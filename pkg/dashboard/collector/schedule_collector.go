@@ -1,0 +1,177 @@
+// Copyright 2021 Chaos Mesh Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+package collector
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
+	"gorm.io/gorm"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/chaos-mesh/chaos-mesh/api/v1alpha1"
+	"github.com/chaos-mesh/chaos-mesh/pkg/dashboard/core"
+)
+
+// ScheduleCollector represents a collector for Schedule Object.
+type ScheduleCollector struct {
+	client.Client
+	Log     logr.Logger
+	apiType runtime.Object
+	store   core.ScheduleStore
+}
+
+// Setup setups collectors by Manager.
+func (r *ScheduleCollector) Setup(mgr ctrl.Manager, apiType client.Object) error {
+	r.apiType = apiType
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(apiType).
+		Complete(r)
+}
+
+// Reconcile reconciles a Schedule collector.
+func (r *ScheduleCollector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return ctrl.Result{}, err
+	}
+	if r.apiType == nil {
+		r.Log.Error(nil, "apiType has not been initialized")
+		return ctrl.Result{}, nil
+	}
+
+	schedule := &v1alpha1.Schedule{}
+	err := r.Get(ctx, req.NamespacedName, schedule)
+	if err := ctx.Err(); err != nil {
+		return ctrl.Result{}, err
+	}
+	if apierrors.IsNotFound(err) {
+		if err = r.archiveSchedule(ctx, req.Namespace, req.Name); err != nil {
+			r.Log.Error(err, "failed to archive schedule")
+			return retryCollector(ctx)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if err != nil {
+		r.Log.Error(err, "failed to get schedule object", "request", req.NamespacedName)
+		return retryCollector(ctx)
+	}
+
+	if err := r.createOrUpdateSchedule(ctx, req, *schedule); err != nil {
+		r.Log.Error(err, "failed to set schedule")
+		return retryCollector(ctx)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *ScheduleCollector) createOrUpdateSchedule(ctx context.Context, req ctrl.Request, schedule v1alpha1.Schedule) error {
+	sch := &core.Schedule{
+		Namespace: req.Namespace,
+		Name:      req.Name,
+		Kind:      schedule.Kind,
+		UID:       string(schedule.UID),
+		Archived:  false,
+	}
+
+	switch schedule.Spec.Type {
+	case v1alpha1.ScheduleTypePodChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.PodChaos.Action)
+	case v1alpha1.ScheduleTypeNetworkChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.NetworkChaos.Action)
+	case v1alpha1.ScheduleTypeIOChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.IOChaos.Action)
+	case v1alpha1.ScheduleTypeDNSChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.DNSChaos.Action)
+	case v1alpha1.ScheduleTypeAWSChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.AWSChaos.Action)
+	case v1alpha1.ScheduleTypeGCPChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.GCPChaos.Action)
+	case v1alpha1.ScheduleTypeJVMChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.JVMChaos.Action)
+	case v1alpha1.ScheduleTypePhysicalMachineChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.PhysicalMachineChaos.Action)
+	case v1alpha1.ScheduleTypeAzureChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.AzureChaos.Action)
+	case v1alpha1.ScheduleTypeBlockChaos:
+		sch.Action = string(schedule.Spec.ScheduleItem.BlockChaos.Action)
+	case v1alpha1.ScheduleTypeTimeChaos, v1alpha1.ScheduleTypeKernelChaos, v1alpha1.ScheduleTypeStressChaos, v1alpha1.ScheduleTypeHTTPChaos, v1alpha1.ScheduleTypeWorkflow:
+		sch.Action = ""
+	default:
+		return errors.New("unsupported chaos type " + string(schedule.Spec.Type))
+	}
+
+	sch.StartTime = schedule.GetCreationTimestamp().Time
+	if schedule.GetDeletionTimestamp() != nil {
+		sch.FinishTime = &schedule.GetDeletionTimestamp().Time
+	}
+
+	data, err := json.Marshal(schedule)
+	if err != nil {
+		r.Log.Error(err, "failed to marshal schedule", "kind", sch.Kind,
+			"namespace", sch.Namespace, "name", sch.Name)
+		return err
+	}
+
+	sch.Schedule = string(data)
+
+	find, err := r.store.FindByUID(ctx, string(schedule.UID))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if err := r.store.Save(ctx, sch); err != nil {
+			r.Log.Error(err, "failed to create schedule", "schedule", sch)
+			return err
+		}
+		return nil
+	}
+
+	if err != nil {
+		r.Log.Error(err, "failed to find schedule", "UID", schedule.UID)
+		return err
+	}
+
+	// Schedule spec is immutable after creation. Only persist finish time updates.
+	if sch.FinishTime == nil {
+		return nil
+	}
+
+	if find.FinishTime != nil && find.FinishTime.Equal(*sch.FinishTime) {
+		return nil
+	}
+
+	find.FinishTime = sch.FinishTime
+
+	if err := r.store.Save(ctx, find); err != nil {
+		r.Log.Error(err, "failed to update schedule", "schedule", sch)
+		return err
+	}
+
+	return nil
+}
+
+func (r *ScheduleCollector) archiveSchedule(ctx context.Context, ns, name string) error {
+	if err := r.store.Archive(ctx, ns, name); err != nil {
+		r.Log.Error(err, "failed to archive schedule", "namespace", ns, "name", name)
+		return err
+	}
+
+	return nil
+}

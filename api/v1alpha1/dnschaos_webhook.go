@@ -1,89 +1,67 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package v1alpha1
 
 import (
 	"fmt"
+	"net/netip"
+	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
-// log is for logging in this package.
-var dnschaoslog = logf.Log.WithName("dnschaos-resource")
-
-// +kubebuilder:webhook:path=/mutate-chaos-mesh-org-v1alpha1-dnschaos,mutating=true,failurePolicy=fail,groups=chaos-mesh.org,resources=dnschaos,verbs=create;update,versions=v1alpha1,name=mdnschaos.kb.io
-
-var _ webhook.Defaulter = &DNSChaos{}
-
-// Default implements webhook.Defaulter so a webhook will be registered for the type
-func (in *DNSChaos) Default() {
-	dnschaoslog.Info("default", "name", in.Name)
-
-	in.Spec.Selector.DefaultNamespace(in.GetNamespace())
-}
-
-// +kubebuilder:webhook:verbs=create;update,path=/validate-chaos-mesh-org-v1alpha1-dnschaos,mutating=false,failurePolicy=fail,groups=chaos-mesh.org,resources=dnschaos,versions=v1alpha1,name=vdnschaos.kb.io
-
-var _ ChaosValidator = &DNSChaos{}
-
-// ValidateCreate implements webhook.Validator so a webhook will be registered for the type
-func (in *DNSChaos) ValidateCreate() error {
-	dnschaoslog.Info("validate create", "name", in.Name)
-	return in.Validate()
-}
-
-// ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
-func (in *DNSChaos) ValidateUpdate(old runtime.Object) error {
-	dnschaoslog.Info("validate update", "name", in.Name)
-	return in.Validate()
-}
-
-// ValidateDelete implements webhook.Validator so a webhook will be registered for the type
-func (in *DNSChaos) ValidateDelete() error {
-	dnschaoslog.Info("validate delete", "name", in.Name)
-
-	// Nothing to do?
-	return nil
-}
-
-// Validate validates chaos object
-func (in *DNSChaos) Validate() error {
-	specField := field.NewPath("spec")
-	allErrs := in.ValidateScheduler(specField)
-	allErrs = append(allErrs, in.ValidatePodMode(specField)...)
-
-	if len(allErrs) > 0 {
-		return fmt.Errorf(allErrs.ToAggregate().Error())
+func (in *DNSChaosSpec) Validate(_ any, path *field.Path) field.ErrorList {
+	if in.Action != StaticAction {
+		return nil
 	}
-
+	if _, err := ParseDNSDomainIPMappings(in.DomainIPMappingList); err != nil {
+		return field.ErrorList{field.Invalid(path.Child("domainIpMapping"), in.DomainIPMappingList, err.Error())}
+	}
 	return nil
 }
 
-// SelectSpec returns the selector config for authority validate
-func (in *DNSChaos) GetSelectSpec() []SelectSpec {
-	return []SelectSpec{&in.Spec}
-}
-
-// ValidateScheduler validates the scheduler and duration
-func (in *DNSChaos) ValidateScheduler(spec *field.Path) field.ErrorList {
-	return ValidateScheduler(in, spec)
-}
-
-// ValidatePodMode validates the value with podmode
-func (in *DNSChaos) ValidatePodMode(spec *field.Path) field.ErrorList {
-	return ValidatePodMode(in.Spec.Value, in.Spec.Mode, spec.Child("value"))
+// ParseDNSDomainIPMappings validates static mappings and normalizes their domain names and IP addresses.
+func ParseDNSDomainIPMappings(entries []string) (map[string]string, error) {
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("at least one domain=IP mapping is required for the static action")
+	}
+	mappings := make(map[string]string, len(entries))
+	for i, entry := range entries {
+		domain, address, found := strings.Cut(entry, "=")
+		if !found {
+			return nil, fmt.Errorf("mapping %d must have the form domain=IP", i)
+		}
+		domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+		if problems := validation.IsDNS1123Subdomain(domain); len(problems) > 0 {
+			return nil, fmt.Errorf("mapping %d has invalid domain %q: %s", i, domain, strings.Join(problems, "; "))
+		}
+		for label := range strings.SplitSeq(domain, ".") {
+			if len(label) > 63 {
+				return nil, fmt.Errorf("mapping %d has a domain label longer than 63 characters", i)
+			}
+		}
+		ip, err := netip.ParseAddr(address)
+		if err != nil || ip.Zone() != "" {
+			return nil, fmt.Errorf("mapping %d has invalid IP address %q", i, address)
+		}
+		if _, exists := mappings[domain]; exists {
+			return nil, fmt.Errorf("mapping %d repeats domain %q", i, domain)
+		}
+		mappings[domain] = ip.Unmap().String()
+	}
+	return mappings, nil
 }

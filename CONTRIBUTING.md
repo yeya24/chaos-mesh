@@ -1,158 +1,83 @@
 # Contributing to Chaos Mesh
 
-Thanks for your interest in improving the project! This document provides a step-by-step guide for general contributions to Chaos Mesh.
+Thank you for helping improve Chaos Mesh. This guide covers the basic contribution workflow; use the directory-specific README files for implementation details.
 
-## Communications
+All contributors must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Before starting work on something major, please reach out to us via GitHub, Slack, email, etc. We will make sure no one else is already working on it and ask you to open a GitHub issue. Also, we will provide necessary guidance should you need it.
+## Before you start
 
-Specifically, if you want to develop a specific chaos type, you may also find [Development Guide](https://chaos-mesh.org/docs/development_guides/development_overview) useful.
+For a bug fix or small improvement, you can open a pull request directly. For a new feature, new chaos type, public API change, or other substantial work, open or comment on a GitHub issue first so the design and ownership can be agreed before implementation.
 
-## Submitting a PR
+The [Chaos Mesh developer guide](https://chaos-mesh.org/docs/developer-guide-overview/) provides additional background for developing chaos types and setting up a development environment.
 
-If you have a specific idea of a fix or update, follow these steps below to submit a PR:
+## Set up your fork
 
-- [Step 1: Make the change](#step-1-make-the-change)
-- [Step 2: Run unit tests](#step-2-run-unit-tests)
-- [Step 3: Start Chaos Mesh locally and do manual tests](#step-3-start-chaos-mesh-locally-and-do-manual-tests)
-- [Step 4: Commit and push your changes](#step-4-commit-and-push-your-changes)
-- [Step 5: Create a pull request](#step-5-create-a-pull-request)
-- [Step 6: Get a code review](#step-6-get-a-code-review)
-
-### Step 1: Make the change
-
-1. Fork the Chaos Mesh repo, and then clone it:
-
-   ```bash
-   $ export user={your github. profile name}
-   $ git clone git@github.com:${user}/chaos-mesh.git
-   ```
-
-2. Set your cloned local to track the upstream repository:
-
-   ```bash
-   $ cd chaos-mesh
-   $ git remote add upstream https://github.com/chaos-mesh/chaos-mesh
-   ```
-
-3. Disable pushing to upstream master:
-
-   ```bash
-   $ git remote set-url --push upstream no_push
-   $ git remote -v
-   ```
-
-   The output should look like:
-
-   ```bash
-   origin    git@github.com:$(user)/chaos-mesh.git (fetch)
-   origin    git@github.com:$(user)/chaos-mesh.git (push)
-   upstream  https://github.com/chaos-mesh/chaos-mesh (fetch)
-   upstream  no_push (push)
-   ```
-
-4. Get your local master up-to-date and create your working branch:
-
-   ```bash
-   $ git fetch upstream
-   $ git checkout master
-   $ git rebase upstream/master
-   $ git checkout -b myfeature
-   ```
-
-5. Make the change on the code.
-
-   You can new edit the code on the `myfeature` branch.
-
-   If you want to update the `crd.yaml` according the the CRD structs, run the following commands:
-
-   ```bash
-   $ make generate
-   $ make manifests/crd.yaml
-   ```
-
-6. Check the code change by running the following command:
-
-   ```bash
-   $ make check
-   ```
-
-   This will show errors if your code change does not pass the check. (eg: fmt, lint). Please fix them before submitting the PR.
-
-### Step 2: Run unit tests
-
-Before running your code in a real Kubernetes cluster, make sure it passes all unit tests:
+Fork the repository, clone your fork, add the upstream repository, and create a branch from the latest `master`:
 
 ```bash
-$ make ensure-kubebuilder # install some test dependencies
-$ make test
+git clone git@github.com:YOUR_GITHUB_USERNAME/chaos-mesh.git
+cd chaos-mesh
+git remote add upstream https://github.com/chaos-mesh/chaos-mesh.git
+git fetch upstream
+git switch --create BRANCH_NAME upstream/master
 ```
 
-### Step 3: Start Chaos Mesh locally and do manual tests
+Keep each pull request focused on one problem and preserve unrelated changes in your working tree.
 
-1. Start a Kubernetes cluster locally. There are two options:
+## Read the relevant guide
 
-   - Use [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) to start a Kubernetes cluster locally and [kubectl](https://kubernetes.io/docs/reference/kubectl/overview/) to access the cluster. If you install these manually, run `kind`: `kind create cluster`to start the cluster.
+Start with the documentation closest to the code you plan to change:
 
-   - Install the above dependencies in `~/local/bin` using [`install.sh`](https://github.com/chaos-mesh/chaos-mesh/blob/master/install.sh):
+| Area | Guide |
+| --- | --- |
+| Project overview | [README.md](README.md) |
+| Controller architecture, reconciliation, and chaos implementations | [controllers/README.md](controllers/README.md) |
+| Executable entry points and repository generators | [cmd/README.md](cmd/README.md) |
+| Helm chart configuration and development | [helm/chaos-mesh/README.md](helm/chaos-mesh/README.md) |
+| Dashboard frontend | [ui/README.md](ui/README.md) |
+| Integration tests | [test/integration_test/README.md](test/integration_test/README.md) |
 
-     ```bash
-     $ ./install.sh --local kind --dependency-only
-     ```
+README files in subdirectories contain more focused design and lifecycle details. Follow existing package boundaries and patterns before introducing a new abstraction.
 
-2. Make sure the installation in step 1 is successful:
+## Make and verify the change
 
-   ```bash
-   $ source ~/.bash_profile
-   $ kind --version
-   ...
-   $ kubectl version
-   ...
-   ```
+Add or update tests with the implementation. During development, run the narrowest relevant tests, builds, linters, or Helm rendering commands described by the area's README instead of repeatedly running every repository-wide check.
 
-3. Install Chaos Mesh:
+For focused Go work, run tests from the module that owns the package:
 
-   Following command will rebuild project code and reinstall chaos mesh.
+```bash
+go test ./path/to/package
+```
 
-   ```bash
-   #
-   $ ./hack/local-up-chaos-mesh.sh
-   ```
+Do not edit generated files directly. Change their source and run the corresponding generator. For example, `make generate` refreshes generated API code, clients, CRDs, the combined CRD manifest, and related artifacts after an API or CRD change.
 
-Now you can test your code update on the deployed cluster.
+Use the broad checks when the change requires them and for final validation when practical:
 
-### Step 4: Commit and push your changes
+```bash
+make test
+make check
+```
 
-Congratulations! Now you have finished all tests and are ready to commit your code.
+These targets can regenerate or reformat tracked files and may build the containerized development environment. Inspect `git status` and `git diff` afterward, and keep only changes related to your contribution.
 
-1. Run the following commands to keep your branch in sync:
+Do not run end-to-end or fault-injection tests unless you have a suitable disposable Kubernetes cluster and the change requires them.
 
-   ```bash
-   $ git fetch upstream
-   $ git rebase upstream/master
-   ```
+## Submit a pull request
 
-2. Commit your changes:
+Review the final diff, stage only the intended files, and sign off every commit for DCO compliance:
 
-   ```bash
-   $ git add -A
-   $ git commit --signoff
-   ```
+```bash
+git status --short
+git diff --check
+git add CHANGED_FILES
+git commit --signoff
+git push --set-upstream origin BRANCH_NAME
+```
 
-3. Push your changes to the remote branch:
+Follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for commit messages and the pull request title. Complete the [pull request template](.github/pull_request_template.md), link the relevant issue, describe how the change was verified, and update `CHANGELOG.md` when required by the template.
 
-   ```bash
-   $ git push -f origin myfeature
-   ```
+During review, push follow-up commits to the same branch. Keep the branch up to date with `upstream/master` when necessary, and avoid mixing unrelated cleanup into the pull request.
 
-### Step 5: Create a pull request
+## Getting help
 
-1. Visit your fork at <https://github.com/chaos-mesh/chaos-mesh> (replace the first chaos-mesh with your username).
-2. Click the Compare & pull request button next to your `myfeature` branch.
-3. Edit the description of the pull request to match your changes.
-
-### Step 6: Get a code review
-
-Once your pull request has been opened, it will be assigned to at least two reviewers. The reviewers will do a thorough code review of correctness, bugs, opportunities for improvement, documentation and comments, and style.
-
-Commit changes made in response to review comments to the same branch on your fork.
+Use GitHub issues for bugs and feature discussions. For broader development questions, see the community channels listed in the [project README](README.md#community).

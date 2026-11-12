@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-
-# Copyright 2020 Chaos Mesh Authors.
+# Copyright 2021 Chaos Mesh Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+
+
 
 set -e
 
@@ -19,7 +22,7 @@ usage() {
     cat << EOF
 This script is used to install web-show.
 USAGE:
-    install.sh [FLAGS] [OPTIONS]
+    deploy.sh [FLAGS] [OPTIONS]
 FLAGS:
     -h, --help              Prints help information
     -d, --delete            Delete web-show application
@@ -63,12 +66,6 @@ fi
 
 TARGET_IP=$(kubectl get pod -n kube-system -o wide| grep kube-controller | head -n 1 | awk '{print $6}')
 
-if [ ${DOCKER_MIRROR} == "true" ]; then
-    docker pull dockerhub.azk8s.cn/pingcap/web-show || true
-    docker tag dockerhub.azk8s.cn/pingcap/web-show pingcap/web-show  || true
-    kind load docker-image pingcap/web-show > /dev/null 2>&1 || true
-fi
-
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Service
@@ -104,7 +101,7 @@ spec:
     spec:
       containers:
         - name: web-show
-          image: pingcap/web-show
+          image: cr.chaos-mesh.dev/chaos-mesh/web-show
           imagePullPolicy: Always
           command:
             - /usr/local/bin/web-show

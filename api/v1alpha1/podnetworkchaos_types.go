@@ -1,15 +1,17 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package v1alpha1
 
@@ -20,10 +22,11 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// KindPodNetworkChaos is the kind for network chaos
-const KindPodNetworkChaos = "PodNetworkChaos"
-
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +chaos-mesh:base
+// +chaos-mesh:webhook:enableUpdate
+// +genclient
 
 // PodNetworkChaos is the Schema for the PodNetworkChaos API
 type PodNetworkChaos struct {
@@ -35,7 +38,7 @@ type PodNetworkChaos struct {
 
 	// +optional
 	// Most recently observed status of the chaos experiment about pods
-	Status PodNetworkChaosStatus `json:"status"`
+	Status PodNetworkChaosStatus `json:"status,omitempty"`
 }
 
 // PodNetworkChaosSpec defines the desired state of PodNetworkChaos
@@ -53,16 +56,48 @@ type PodNetworkChaosSpec struct {
 	TrafficControls []RawTrafficControl `json:"tcs,omitempty"`
 }
 
+// IPSetType represents the type of IP set
+type IPSetType string
+
+const (
+	SetIPSet     IPSetType = "list:set"
+	NetPortIPSet IPSetType = "hash:net,port"
+	NetIPSet     IPSetType = "hash:net"
+)
+
 // RawIPSet represents an ipset on specific pod
 type RawIPSet struct {
 	// The name of ipset
 	Name string `json:"name"`
 
-	// The contents of ipset
-	Cidrs []string `json:"cidrs"`
+	IPSetType IPSetType `json:"ipsetType"`
+
+	// The contents of ipset.
+	// Only available when IPSetType is NetIPSet.
+	// +optional
+	Cidrs []string `json:"cidrs,omitempty"`
+
+	// The contents of ipset.
+	// Only available when IPSetType is NetPortIPSet.
+	// +optional
+	CidrAndPorts []CidrAndPort `json:"cidrAndPorts,omitempty"`
+
+	// The contents of ipset.
+	// Only available when IPSetType is SetIPSet.
+	// +optional
+	SetNames []string `json:"setNames,omitempty"`
 
 	// The name and namespace of the source network chaos
 	RawRuleSource `json:",inline"`
+}
+
+// CidrAndPort represents CIDR and port pair
+type CidrAndPort struct {
+	Cidr string `json:"cidr"`
+
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port uint16 `json:"port"`
 }
 
 // ChainDirection represents the direction of chain
@@ -82,10 +117,23 @@ type RawIptables struct {
 	Name string `json:"name"`
 
 	// The name of related ipset
-	IPSets []string `json:"ipsets"`
+	// +optional
+	// +nullable
+	IPSets []string `json:"ipsets,omitempty"`
 
 	// The block direction of this iptables rule
 	Direction ChainDirection `json:"direction"`
+
+	// PartitionBehavior defines whether matching packets are dropped or rejected.
+	// Reject resets TCP connections and rejects remaining traffic with the
+	// platform-default response. An empty value preserves the legacy drop behavior.
+	// +optional
+	// +kubebuilder:validation:Enum=drop;reject
+	PartitionBehavior NetworkChaosPartitionBehavior `json:"partitionBehavior,omitempty"`
+
+	// Device represents the network device to be affected.
+	// +optional
+	Device string `json:"device,omitempty"`
 
 	RawRuleSource `json:",inline"`
 }
@@ -114,29 +162,43 @@ type RawTrafficControl struct {
 
 	// The name and namespace of the source network chaos
 	Source string `json:"source"`
+
+	// Device represents the network device to be affected.
+	// +optional
+	Device string `json:"device,omitempty"`
 }
 
 // TcParameter represents the parameters for a traffic control chaos
 type TcParameter struct {
 	// Delay represents the detail about delay action
+	// +ui:form:when=action=='delay'
 	// +optional
 	Delay *DelaySpec `json:"delay,omitempty"`
 
 	// Loss represents the detail about loss action
+	// +ui:form:when=action=='loss'
 	// +optional
 	Loss *LossSpec `json:"loss,omitempty"`
 
 	// DuplicateSpec represents the detail about loss action
+	// +ui:form:when=action=='duplicate'
 	// +optional
 	Duplicate *DuplicateSpec `json:"duplicate,omitempty"`
 
 	// Corrupt represents the detail about corrupt action
+	// +ui:form:when=action=='corrupt'
 	// +optional
 	Corrupt *CorruptSpec `json:"corrupt,omitempty"`
 
 	// Bandwidth represents the detail about bandwidth control action
+	// +ui:form:when=action=='bandwidth'
 	// +optional
 	Bandwidth *BandwidthSpec `json:"bandwidth,omitempty"`
+
+	// Rate represents the detail about rate control action
+	// +ui:form:ignore
+	// +optional
+	Rate *RateSpec `json:"rate,omitempty"`
 }
 
 // RawRuleSource represents the name and namespace of the source network chaos
@@ -146,7 +208,9 @@ type RawRuleSource struct {
 
 // PodNetworkChaosStatus defines the observed state of PodNetworkChaos
 type PodNetworkChaosStatus struct {
-	ChaosStatus `json:",inline"`
+	FailedMessage string `json:"failedMessage,omitempty"`
+
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -156,40 +220,4 @@ type PodNetworkChaosList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []PodNetworkChaos `json:"items"`
-}
-
-// GetStatus returns the status of chaos
-func (in *PodNetworkChaos) GetStatus() *ChaosStatus {
-	return &in.Status.ChaosStatus
-}
-
-// GetChaos returns a chaos instance
-func (in *PodNetworkChaos) GetChaos() *ChaosInstance {
-	instance := &ChaosInstance{
-		Name:      in.Name,
-		Namespace: in.Namespace,
-		Kind:      "NetworkChaos",
-		StartTime: in.CreationTimestamp.Time,
-		Status:    string(in.GetStatus().Experiment.Phase),
-	}
-	if in.DeletionTimestamp != nil {
-		instance.EndTime = in.DeletionTimestamp.Time
-	}
-	return instance
-}
-
-// ListChaos returns a list of network chaos
-func (in *PodNetworkChaosList) ListChaos() []*ChaosInstance {
-	if len(in.Items) == 0 {
-		return nil
-	}
-	res := make([]*ChaosInstance, 0, len(in.Items))
-	for _, item := range in.Items {
-		res = append(res, item.GetChaos())
-	}
-	return res
-}
-
-func init() {
-	SchemeBuilder.Register(&PodNetworkChaos{}, &PodNetworkChaosList{})
 }

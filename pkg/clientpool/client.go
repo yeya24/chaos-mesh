@@ -1,25 +1,28 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
+// Package clientpool provides local Kubernetes clients and caches Kubernetes and authorization clients by bearer token.
 package clientpool
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"sync"
 
-	lru "github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	authorizationv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/rest"
@@ -63,11 +66,11 @@ func NewLocalClient(localConfig *rest.Config, scheme *runtime.Scheme) (Clients, 
 }
 
 // Client returns the local k8s client
-func (c *LocalClient) Client(token string) (pkgclient.Client, error) {
+func (c *LocalClient) Client(_ string) (pkgclient.Client, error) {
 	return c.client, nil
 }
 
-func (c *LocalClient) AuthClient(token string) (authorizationv1.AuthorizationV1Interface, error) {
+func (c *LocalClient) AuthClient(_ string) (authorizationv1.AuthorizationV1Interface, error) {
 	return c.authClient, nil
 }
 
@@ -77,28 +80,28 @@ func (c *LocalClient) Num() int {
 }
 
 // Contains return false for LocalClient
-func (c *LocalClient) Contains(token string) bool {
+func (c *LocalClient) Contains(_ string) bool {
 	return false
 }
 
-// Clients is the client pool of k8s client
+// ClientsPool caches Kubernetes and authorization clients by bearer token.
 type ClientsPool struct {
 	sync.RWMutex
 
 	scheme      *runtime.Scheme
 	localConfig *rest.Config
-	clients     *lru.Cache
-	authClients *lru.Cache
+	clients     *lru.Cache[string, pkgclient.Client]
+	authClients *lru.Cache[string, *authorizationv1.AuthorizationV1Client]
 }
 
-// New creates a new Clients
+// NewClientPool creates a pool with separate caches of up to maxClientNum clients each.
 func NewClientPool(localConfig *rest.Config, scheme *runtime.Scheme, maxClientNum int) (Clients, error) {
-	clients, err := lru.New(maxClientNum)
+	clients, err := lru.New[string, pkgclient.Client](maxClientNum)
 	if err != nil {
 		return nil, err
 	}
 
-	authClients, err := lru.New(maxClientNum)
+	authClients, err := lru.New[string, *authorizationv1.AuthorizationV1Client](maxClientNum)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +125,7 @@ func (c *ClientsPool) Client(token string) (pkgclient.Client, error) {
 
 	value, ok := c.clients.Get(token)
 	if ok {
-		return value.(pkgclient.Client), nil
+		return value, nil
 	}
 
 	config := rest.CopyConfig(c.localConfig)
@@ -157,7 +160,7 @@ func (c *ClientsPool) AuthClient(token string) (authorizationv1.AuthorizationV1I
 
 	value, ok := c.authClients.Get(token)
 	if ok {
-		return value.(authorizationv1.AuthorizationV1Interface), nil
+		return value, nil
 	}
 
 	config := rest.CopyConfig(c.localConfig)
@@ -191,8 +194,8 @@ func (c *ClientsPool) Contains(token string) bool {
 // ExtractTokenFromHeader extracts token from http header
 func ExtractTokenFromHeader(header http.Header) string {
 	auth := header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
+	if after, ok := strings.CutPrefix(auth, "Bearer "); ok {
+		return after
 	}
 
 	return ""

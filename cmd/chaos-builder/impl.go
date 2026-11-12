@@ -1,15 +1,17 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package main
 
@@ -20,17 +22,28 @@ import (
 
 const implImport = `
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"time"
 
+	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	gw "github.com/chaos-mesh/chaos-mesh/api/genericwebhook"
 )
+
+// updating spec of a chaos will have no effect, we'd better reject it
+var ErrCanNotUpdateChaos = errors.New("Cannot update chaos spec")
 `
 
 const implTemplate = `
 const Kind{{.Type}} = "{{.Type}}"
-
+{{if .IsExperiment}}
 // IsDeleted returns whether this resource has been deleted
 func (in *{{.Type}}) IsDeleted() bool {
 	return !in.DeletionTimestamp.IsZero()
@@ -44,89 +57,31 @@ func (in *{{.Type}}) IsPaused() bool {
 	return true
 }
 
+// GetObjectMeta would return the ObjectMeta for chaos
+func (in *{{.Type}}) GetObjectMeta() *metav1.ObjectMeta {
+	return &in.ObjectMeta
+}
+
 // GetDuration would return the duration for chaos
-func (in *{{.Type}}) GetDuration() (*time.Duration, error) {
-	if in.Spec.Duration == nil {
+func (in *{{.Type}}Spec) GetDuration() (*time.Duration, error) {
+	if in.Duration == nil {
 		return nil, nil
 	}
-	duration, err := time.ParseDuration(*in.Spec.Duration)
+	duration, err := time.ParseDuration(string(*in.Duration))
 	if err != nil {
 		return nil, err
 	}
 	return &duration, nil
 }
 
-func (in *{{.Type}}) GetNextStart() time.Time {
-	if in.Status.Scheduler.NextStart == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextStart.Time
-}
-
-func (in *{{.Type}}) SetNextStart(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextStart = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextStart == nil {
-		in.Status.Scheduler.NextStart = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextStart.Time = t
-}
-
-func (in *{{.Type}}) GetNextRecover() time.Time {
-	if in.Status.Scheduler.NextRecover == nil {
-		return time.Time{}
-	}
-	return in.Status.Scheduler.NextRecover.Time
-}
-
-func (in *{{.Type}}) SetNextRecover(t time.Time) {
-	if t.IsZero() {
-		in.Status.Scheduler.NextRecover = nil
-		return
-	}
-
-	if in.Status.Scheduler.NextRecover == nil {
-		in.Status.Scheduler.NextRecover = &metav1.Time{}
-	}
-	in.Status.Scheduler.NextRecover.Time = t
-}
-
-// GetScheduler would return the scheduler for chaos
-func (in *{{.Type}}) GetScheduler() *SchedulerSpec {
-	return in.Spec.Scheduler
-}
-
-// GetChaos would return the a record for chaos
-func (in *{{.Type}}) GetChaos() *ChaosInstance {
-	instance := &ChaosInstance{
-		Name:      in.Name,
-		Namespace: in.Namespace,
-		Kind:      Kind{{.Type}},
-		StartTime: in.CreationTimestamp.Time,
-		Action:    "",
-		Status:    string(in.Status.Experiment.Phase),
-		UID:       string(in.UID),
-	}
-
-	action := reflect.ValueOf(in).Elem().FieldByName("Spec").FieldByName("Action")
-	if action.IsValid() {
-		instance.Action = action.String()
-	}
-	if in.Spec.Duration != nil {
-		instance.Duration = *in.Spec.Duration
-	}
-	if in.DeletionTimestamp != nil {
-		instance.EndTime = in.DeletionTimestamp.Time
-	}
-	return instance
-}
-
 // GetStatus returns the status
 func (in *{{.Type}}) GetStatus() *ChaosStatus {
 	return &in.Status.ChaosStatus
+}
+
+// GetRemoteCluster returns the remoteCluster
+func (in *{{.Type}}) GetRemoteCluster() string {
+	return in.Spec.RemoteCluster
 }
 
 // GetSpecAndMetaString returns a string including the meta and spec field of this chaos object.
@@ -152,17 +107,112 @@ type {{.Type}}List struct {
 	Items           []{{.Type}} ` + "`" + `json:"items"` + "`" + `
 }
 
+func (in *{{.Type}}List) DeepCopyList() GenericChaosList {
+	return in.DeepCopy()
+}
+
 // ListChaos returns a list of chaos
-func (in *{{.Type}}List) ListChaos() []*ChaosInstance {
-	res := make([]*ChaosInstance, 0, len(in.Items))
+func (in *{{.Type}}List) ListChaos() []GenericChaos {
+	var result []GenericChaos
 	for _, item := range in.Items {
-		res = append(res, item.GetChaos())
+		item := item
+		result = append(result, &item)
 	}
-	return res
+	return result
+}
+
+func (in *{{.Type}}) DurationExceeded(now time.Time) (bool, time.Duration, error) {
+	duration, err := in.Spec.GetDuration()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if duration != nil {
+		stopTime := in.GetCreationTimestamp().Add(*duration)
+		if stopTime.Before(now) {
+			return true, 0, nil
+		}
+
+		return false, stopTime.Sub(now), nil
+	}
+
+	return false, 0, nil
+}
+
+func (in *{{.Type}}) IsOneShot() bool {
+	{{- if .OneShotExp}}
+	if {{.OneShotExp}} {
+		return true
+	}
+
+	return false
+	{{- else}}
+	return false
+	{{- end}}
+}
+{{end}}
+var {{.Type}}WebhookLog = logf.Log.WithName("{{.Type}}-resource")
+
+func (in *{{.Type}}) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	typedObj, ok := obj.(*{{.Type}})
+	if !ok {
+		return nil, errors.Errorf("expected type *{{.Type}}, got %T", obj)
+	}
+	{{.Type}}WebhookLog.Info("validate create", "name", typedObj.GetName())
+
+	return typedObj.Validate()
+}
+
+// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type
+func (in *{{.Type}}) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	typedOldObj, ok := oldObj.(*{{.Type}})
+	if !ok {
+		return nil, errors.Errorf("expected type *{{.Type}}, got %T", oldObj)
+	}
+
+	typedNewObj, ok := newObj.(*{{.Type}})
+	if !ok {
+		return nil, errors.Errorf("expected type *{{.Type}}, got %T", newObj)
+	}
+
+	{{.Type}}WebhookLog.Info("validate update", "name", typedOldObj.GetName())
+
+	{{- if not .EnableUpdate}}
+	if !reflect.DeepEqual(typedOldObj.Spec, typedNewObj.Spec) {
+		return nil, ErrCanNotUpdateChaos
+	}
+	{{- end}}
+	return typedNewObj.Validate()
+}
+
+// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type
+func (in *{{.Type}}) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+	typedObj, ok := obj.(*{{.Type}})
+	if !ok {
+		return nil, errors.Errorf("expected type *{{.Type}}, got %T", obj)
+	}
+
+	{{.Type}}WebhookLog.Info("validate delete", "name", typedObj.GetName())
+
+	return nil, nil
+}
+
+var _ webhook.CustomValidator = &{{.Type}}{}
+
+func (in *{{.Type}}) Validate() ([]string, error) {
+	errs := gw.Validate(in)
+	return nil, gw.Aggregate(errs)
+}
+
+var _ webhook.CustomDefaulter = &{{.Type}}{}
+
+func (in *{{.Type}}) Default(_ context.Context, obj runtime.Object) error {
+	gw.Default(obj)
+	return nil
 }
 `
 
-func generateImpl(name string) string {
+func generateImpl(name string, oneShotExp string, isExperiment, enableUpdate bool) string {
 	tmpl, err := template.New("impl").Parse(implTemplate)
 	if err != nil {
 		log.Error(err, "fail to build template")
@@ -171,7 +221,10 @@ func generateImpl(name string) string {
 
 	buf := new(bytes.Buffer)
 	err = tmpl.Execute(buf, &metadata{
-		Type: name,
+		Type:         name,
+		OneShotExp:   oneShotExp,
+		IsExperiment: isExperiment,
+		EnableUpdate: enableUpdate,
 	})
 	if err != nil {
 		log.Error(err, "fail to execute template")

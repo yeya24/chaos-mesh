@@ -4,24 +4,33 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
+// Package crio adapts CRI-O for container ID normalization, inspection, listing, and termination.
 package crio
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"syscall"
 	"time"
+
+	"github.com/pkg/errors"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	v1 "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	crerrors "github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/crclients/errors"
 )
 
 const (
@@ -31,19 +40,20 @@ const (
 	maxUnixSocketPathSize = len(syscall.RawSockaddrUnix{}.Path)
 )
 
-// CrioClient can get information from docker
-type CrioClient struct {
-	client     *http.Client
-	socketPath string
+// Client can get information from docker
+type Client struct {
+	client        *http.Client
+	runtimeClient v1.RuntimeServiceClient
+	socketPath    string
 }
 
 // FormatContainerID strips protocol prefix from the container ID
-func (c CrioClient) FormatContainerID(ctx context.Context, containerID string) (string, error) {
+func (c Client) FormatContainerID(_ context.Context, containerID string) (string, error) {
 	if len(containerID) < len(crioProtocolPrefix) {
-		return "", fmt.Errorf("container id %s is not a crio container id", containerID)
+		return "", errors.Errorf("container id %s is not a crio container id", containerID)
 	}
 	if containerID[0:len(crioProtocolPrefix)] != crioProtocolPrefix {
-		return "", fmt.Errorf("expected %s but got %s", crioProtocolPrefix, containerID[0:len(crioProtocolPrefix)])
+		return "", errors.Errorf("expected %s but got %s", crioProtocolPrefix, containerID[0:len(crioProtocolPrefix)])
 	}
 	return containerID[len(crioProtocolPrefix):], nil
 }
@@ -51,7 +61,7 @@ func (c CrioClient) FormatContainerID(ctx context.Context, containerID string) (
 // most of these implementations are copied from https://github.com/cri-o/cri-o/blob/master/internal/client/client.go
 
 // GetPidFromContainerID fetches PID according to container id
-func (c CrioClient) GetPidFromContainerID(ctx context.Context, containerID string) (uint32, error) {
+func (c Client) GetPidFromContainerID(ctx context.Context, containerID string) (uint32, error) {
 	id, err := c.FormatContainerID(ctx, containerID)
 	if err != nil {
 		return 0, err
@@ -66,7 +76,7 @@ func (c CrioClient) GetPidFromContainerID(ctx context.Context, containerID strin
 		return 0, err
 	}
 	defer resp.Body.Close()
-	cInfo := make(map[string]interface{})
+	cInfo := make(map[string]any)
 	if err := json.NewDecoder(resp.Body).Decode(&cInfo); err != nil {
 		return 0, err
 	}
@@ -80,7 +90,7 @@ func (c CrioClient) GetPidFromContainerID(ctx context.Context, containerID strin
 }
 
 // ContainerKillByContainerID kills container according to container id
-func (c CrioClient) ContainerKillByContainerID(ctx context.Context, containerID string) error {
+func (c Client) ContainerKillByContainerID(ctx context.Context, containerID string) error {
 	pid, err := c.GetPidFromContainerID(ctx, containerID)
 	if err != nil {
 		return err
@@ -88,7 +98,55 @@ func (c CrioClient) ContainerKillByContainerID(ctx context.Context, containerID 
 	return syscall.Kill(int(pid), syscall.SIGKILL)
 }
 
-func New(socketPath string) (*CrioClient, error) {
+// ListContainerIDs lists all container IDs
+func (c Client) ListContainerIDs(ctx context.Context) ([]string, error) {
+	resp, err := c.runtimeClient.ListContainers(ctx, &v1.ListContainersRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	var ids []string
+	for _, container := range resp.Containers {
+		id := fmt.Sprintf("%s%s", crioProtocolPrefix, container.Id)
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// GetLabelsFromContainerID returns the labels according to container ID
+func (c Client) GetLabelsFromContainerID(ctx context.Context, containerID string) (map[string]string, error) {
+	id, err := c.FormatContainerID(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
+
+	container, err := c.runtimeClient.ContainerStatus(ctx, &v1.ContainerStatusRequest{
+		ContainerId: id,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return container.Status.Labels, nil
+}
+
+// GetSandboxPidFromPodUID is not supported for CRI-O runtime.
+func (c Client) GetSandboxPidFromPodUID(_ context.Context, _ string) (uint32, error) {
+	return 0, crerrors.ErrNotSupported
+}
+
+func buildRuntimeServiceClient(endpoint string) (v1.RuntimeServiceClient, error) {
+	addr := fmt.Sprintf("unix://%s", endpoint)
+	conn, err := grpc.Dial(addr, grpc.WithBlock(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+
+	client := v1.NewRuntimeServiceClient(conn)
+	return client, err
+}
+
+func New(socketPath string) (*Client, error) {
 	tr := new(http.Transport)
 	if err := configureUnixTransport(tr, "unix", socketPath); err != nil {
 		return nil, err
@@ -96,15 +154,22 @@ func New(socketPath string) (*CrioClient, error) {
 	c := &http.Client{
 		Transport: tr,
 	}
-	return &CrioClient{
-		client:     c,
-		socketPath: socketPath,
+
+	runtimeClient, err := buildRuntimeServiceClient(socketPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{
+		client:        c,
+		runtimeClient: runtimeClient,
+		socketPath:    socketPath,
 	}, nil
 }
 
 func configureUnixTransport(tr *http.Transport, proto, addr string) error {
 	if len(addr) > maxUnixSocketPathSize {
-		return fmt.Errorf("unix socket path %q is too long", addr)
+		return errors.Errorf("unix socket path %q is too long", addr)
 	}
 	// No need for compression in local communications.
 	tr.DisableCompression = true
@@ -114,7 +179,7 @@ func configureUnixTransport(tr *http.Transport, proto, addr string) error {
 	return nil
 }
 
-func (c *CrioClient) getRequest(ctx context.Context, path string) (*http.Request, error) {
+func (c *Client) getRequest(ctx context.Context, path string) (*http.Request, error) {
 	req, err := http.NewRequest("GET", path, nil)
 	if err != nil {
 		return nil, err

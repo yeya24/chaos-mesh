@@ -1,0 +1,43 @@
+// Copyright 2021 Chaos Mesh Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+package remotecluster
+
+import (
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+
+	"github.com/chaos-mesh/chaos-mesh/api/v1alpha1"
+	"github.com/chaos-mesh/chaos-mesh/controllers/config"
+	"github.com/chaos-mesh/chaos-mesh/controllers/multicluster/clusterregistry"
+	"github.com/chaos-mesh/chaos-mesh/controllers/utils/builder"
+	"github.com/chaos-mesh/chaos-mesh/controllers/utils/recorder"
+)
+
+func Bootstrap(mgr ctrl.Manager, client client.Client, logger logr.Logger, _ *recorder.Builder, registry *clusterregistry.RemoteClusterRegistry) error {
+	if !config.ShouldSpawnController("remotecluster") {
+		return nil
+	}
+
+	reconciler := &Reconciler{Client: client, Log: logger.WithName("remotecluster"), registry: registry}
+	return builder.Default(mgr).
+		For(&v1alpha1.RemoteCluster{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(reconciler.requestsForSecret)).
+		Named("remotecluster").
+		Complete(reconciler)
+}

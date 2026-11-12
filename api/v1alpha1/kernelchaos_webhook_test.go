@@ -1,20 +1,24 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package v1alpha1
 
 import (
-	. "github.com/onsi/ginkgo"
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -23,13 +27,13 @@ var _ = Describe("kernelchaos_webhook", func() {
 	Context("Defaulter", func() {
 		It("set default namespace selector", func() {
 			kernelchaos := &KernelChaos{
-				ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault},
+				Namespace: metav1.NamespaceDefault,
 			}
-			kernelchaos.Default()
+			kernelchaos.Default(context.Background(), kernelchaos)
 			Expect(kernelchaos.Spec.Selector.Namespaces[0]).To(Equal(metav1.NamespaceDefault))
 		})
 	})
-	Context("ChaosValidator of kernelchaos", func() {
+	Context("webhook.Validator of kernelchaos", func() {
 		It("Validate", func() {
 
 			type TestCase struct {
@@ -38,7 +42,6 @@ var _ = Describe("kernelchaos_webhook", func() {
 				execute func(chaos *KernelChaos) error
 				expect  string
 			}
-			duration := "400s"
 			tcs := []TestCase{
 				{
 					name: "simple ValidateCreate",
@@ -49,7 +52,8 @@ var _ = Describe("kernelchaos_webhook", func() {
 						},
 					},
 					execute: func(chaos *KernelChaos) error {
-						return chaos.ValidateCreate()
+						_, err := chaos.ValidateCreate(context.Background(), chaos)
+						return err
 					},
 					expect: "",
 				},
@@ -62,7 +66,8 @@ var _ = Describe("kernelchaos_webhook", func() {
 						},
 					},
 					execute: func(chaos *KernelChaos) error {
-						return chaos.ValidateUpdate(chaos)
+						_, err := chaos.ValidateUpdate(context.Background(), chaos, chaos)
+						return err
 					},
 					expect: "",
 				},
@@ -75,43 +80,10 @@ var _ = Describe("kernelchaos_webhook", func() {
 						},
 					},
 					execute: func(chaos *KernelChaos) error {
-						return chaos.ValidateDelete()
+						_, err := chaos.ValidateDelete(context.Background(), chaos)
+						return err
 					},
 					expect: "",
-				},
-				{
-					name: "only define the Scheduler",
-					chaos: KernelChaos{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: metav1.NamespaceDefault,
-							Name:      "foo4",
-						},
-						Spec: KernelChaosSpec{
-							Scheduler: &SchedulerSpec{
-								Cron: "@every 10m",
-							},
-						},
-					},
-					execute: func(chaos *KernelChaos) error {
-						return chaos.ValidateCreate()
-					},
-					expect: "error",
-				},
-				{
-					name: "only define the Duration",
-					chaos: KernelChaos{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: metav1.NamespaceDefault,
-							Name:      "foo5",
-						},
-						Spec: KernelChaosSpec{
-							Duration: &duration,
-						},
-					},
-					execute: func(chaos *KernelChaos) error {
-						return chaos.ValidateCreate()
-					},
-					expect: "error",
 				},
 			}
 

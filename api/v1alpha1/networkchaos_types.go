@@ -1,15 +1,17 @@
-// Copyright 2019 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package v1alpha1
 
@@ -21,7 +23,10 @@ import (
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // +kubebuilder:object:root=true
-// +chaos-mesh:base
+// +kubebuilder:printcolumn:name="action",type=string,JSONPath=`.spec.action`
+// +kubebuilder:printcolumn:name="duration",type=string,JSONPath=`.spec.duration`
+// +chaos-mesh:experiment
+// +genclient
 
 // NetworkChaos is the Schema for the networkchaos API
 type NetworkChaos struct {
@@ -33,8 +38,12 @@ type NetworkChaos struct {
 
 	// +optional
 	// Most recently observed status of the chaos experiment about pods
-	Status NetworkChaosStatus `json:"status"`
+	Status NetworkChaosStatus `json:"status,omitempty"`
 }
+
+var _ InnerObjectWithCustomStatus = (*NetworkChaos)(nil)
+var _ InnerObjectWithSelector = (*NetworkChaos)(nil)
+var _ InnerObject = (*NetworkChaos)(nil)
 
 // NetworkChaosAction represents the chaos action about network.
 type NetworkChaosAction string
@@ -63,6 +72,19 @@ const (
 	BandwidthAction NetworkChaosAction = "bandwidth"
 )
 
+// NetworkChaosPartitionBehavior defines how packets matched by a network
+// partition are handled.
+type NetworkChaosPartitionBehavior string
+
+const (
+	// DropPartitionBehavior silently drops packets, simulating a network blackhole.
+	DropPartitionBehavior NetworkChaosPartitionBehavior = "drop"
+
+	// RejectPartitionBehavior rejects TCP packets with a reset and rejects other
+	// protocols with the platform-default response, causing traffic to fail fast.
+	RejectPartitionBehavior NetworkChaosPartitionBehavior = "reject"
+)
+
 // Direction represents traffic direction from source to target,
 // it could be netem, delay, loss, duplicate, corrupt or partition,
 // check comments below for detail direction flow.
@@ -79,134 +101,104 @@ const (
 	Both Direction = "both"
 )
 
-// Target represents network partition and netem action target.
-type Target struct {
-	// TargetSelector defines the target selector
-	TargetSelector SelectorSpec `json:"selector" mapstructure:"selector"`
-
-	// TargetMode defines the target selector mode
-	// +kubebuilder:validation:Enum=one;all;fixed;fixed-percent;random-max-percent;""
-	TargetMode PodMode `json:"mode" mapstructure:"mode"`
-
-	// TargetValue is required when the mode is set to `FixedPodMode` / `FixedPercentPodMod` / `RandomMaxPercentPodMod`.
-	// If `FixedPodMode`, provide an integer of pods to do chaos action.
-	// If `FixedPercentPodMod`, provide a number from 0-100 to specify the percent of pods the server can do chaos action.
-	// If `RandomMaxPercentPodMod`,  provide a number from 0-100 to specify the max percent of pods to do chaos action
-	// +optional
-	TargetValue string `json:"value" mapstructure:"value"`
-}
-
-// GetSelector is a getter for Selector (for implementing SelectSpec)
-func (in *Target) GetSelector() SelectorSpec {
-	return in.TargetSelector
-}
-
-// GetMode is a getter for Mode (for implementing SelectSpec)
-func (in *Target) GetMode() PodMode {
-	return in.TargetMode
-}
-
-// GetValue is a getter for Value (for implementing SelectSpec)
-func (in *Target) GetValue() string {
-	return in.TargetValue
-}
-
 // NetworkChaosSpec defines the desired state of NetworkChaos
 type NetworkChaosSpec struct {
+	PodSelector `json:",inline"`
+
 	// Action defines the specific network chaos action.
 	// Supported action: partition, netem, delay, loss, duplicate, corrupt
 	// Default action: delay
 	// +kubebuilder:validation:Enum=netem;delay;loss;duplicate;corrupt;partition;bandwidth
 	Action NetworkChaosAction `json:"action"`
 
-	// Mode defines the mode to run chaos action.
-	// Supported mode: one / all / fixed / fixed-percent / random-max-percent
-	// +kubebuilder:validation:Enum=one;all;fixed;fixed-percent;random-max-percent
-	Mode PodMode `json:"mode"`
-
-	// Value is required when the mode is set to `FixedPodMode` / `FixedPercentPodMod` / `RandomMaxPercentPodMod`.
-	// If `FixedPodMode`, provide an integer of pods to do chaos action.
-	// If `FixedPercentPodMod`, provide a number from 0-100 to specify the percent of pods the server can do chaos action.
-	// If `RandomMaxPercentPodMod`,  provide a number from 0-100 to specify the max percent of pods to do chaos action
+	// PartitionBehavior defines how matched packets are handled for the partition
+	// action. "drop" silently discards packets, while "reject" resets TCP
+	// connections and rejects remaining traffic with the platform-default response.
+	// +ui:form:when=action=='partition'
 	// +optional
-	Value string `json:"value"`
+	// +kubebuilder:validation:Enum=drop;reject
+	// +kubebuilder:default=drop
+	PartitionBehavior NetworkChaosPartitionBehavior `json:"partitionBehavior,omitempty"`
 
-	// Selector is used to select pods that are used to inject chaos action.
-	Selector SelectorSpec `json:"selector"`
+	// Device represents the network device to be affected.
+	// +optional
+	Device string `json:"device,omitempty"`
 
 	// Duration represents the duration of the chaos action
-	Duration *string `json:"duration,omitempty"`
-
-	// Scheduler defines some schedule rules to control the running time of the chaos experiment about network.
-	Scheduler *SchedulerSpec `json:"scheduler,omitempty"`
+	Duration *string `json:"duration,omitempty" webhook:"Duration"`
 
 	// TcParameter represents the traffic control definition
 	TcParameter `json:",inline"`
 
 	// Direction represents the direction, this applies on netem and network partition action
 	// +optional
-	// +kubebuilder:validation:Enum=to;from;both;""
+	// +kubebuilder:validation:Enum=to;from;both
+	// +kubebuilder:default=to
 	Direction Direction `json:"direction,omitempty"`
 
 	// Target represents network target, this applies on netem and network partition action
 	// +optional
-	Target *Target `json:"target,omitempty"`
+	Target *PodSelector `json:"target,omitempty" webhook:",nilable"`
+
+	// TargetDevice represents the network device to be affected in target scope.
+	// +optional
+	TargetDevice string `json:"targetDevice,omitempty"`
 
 	// ExternalTargets represents network targets outside k8s
 	// +optional
 	ExternalTargets []string `json:"externalTargets,omitempty"`
-}
 
-// GetSelector is a getter for Selector (for implementing SelectSpec)
-func (in *NetworkChaosSpec) GetSelector() SelectorSpec {
-	return in.Selector
-}
-
-// GetMode is a getter for Mode (for implementing SelectSpec)
-func (in *NetworkChaosSpec) GetMode() PodMode {
-	return in.Mode
-}
-
-// GetValue is a getter for Value (for implementing SelectSpec)
-func (in *NetworkChaosSpec) GetValue() string {
-	return in.Value
+	// RemoteCluster represents the remote cluster where the chaos will be deployed
+	// +optional
+	RemoteCluster string `json:"remoteCluster,omitempty"`
 }
 
 // NetworkChaosStatus defines the observed state of NetworkChaos
 type NetworkChaosStatus struct {
 	ChaosStatus `json:",inline"`
+	// Instances always specifies podnetworkchaos generation or empty
+	// +optional
+	Instances map[string]int64 `json:"instances,omitempty"`
 }
 
 // DelaySpec defines detail of a delay action
 type DelaySpec struct {
-	Latency     string       `json:"latency"`
-	Correlation string       `json:"correlation,omitempty"`
-	Jitter      string       `json:"jitter,omitempty"`
-	Reorder     *ReorderSpec `json:"reorder,omitempty"`
+	// +kubebuilder:validation:Pattern="^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)$"
+	Latency string `json:"latency" webhook:"Duration"`
+	// +optional
+	Correlation string `json:"correlation,omitempty" default:"0" webhook:"FloatStr"`
+	// +kubebuilder:validation:Pattern="^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)$"
+	// +optional
+	Jitter string `json:"jitter,omitempty" default:"0ms" webhook:"Duration"`
+	// +optional
+	Reorder *ReorderSpec `json:"reorder,omitempty"`
 }
 
 // LossSpec defines detail of a loss action
 type LossSpec struct {
-	Loss        string `json:"loss"`
-	Correlation string `json:"correlation"`
+	Loss string `json:"loss" webhook:"FloatStr"`
+	// +optional
+	Correlation string `json:"correlation,omitempty" default:"0" webhook:"FloatStr"`
 }
 
 // DuplicateSpec defines detail of a duplicate action
 type DuplicateSpec struct {
-	Duplicate   string `json:"duplicate"`
-	Correlation string `json:"correlation"`
+	Duplicate string `json:"duplicate" webhook:"FloatStr"`
+	// +optional
+	Correlation string `json:"correlation,omitempty" default:"0" webhook:"FloatStr"`
 }
 
 // CorruptSpec defines detail of a corrupt action
 type CorruptSpec struct {
-	Corrupt     string `json:"corrupt"`
-	Correlation string `json:"correlation"`
+	Corrupt string `json:"corrupt" webhook:"FloatStr"`
+	// +optional
+	Correlation string `json:"correlation,omitempty" default:"0" webhook:"FloatStr"`
 }
 
 // BandwidthSpec defines detail of bandwidth limit.
 type BandwidthSpec struct {
-	// Rate is the speed knob. Allows bps, kbps, mbps, gbps, tbps unit. bps means bytes per second.
-	Rate string `json:"rate"`
+	// Rate is the speed knob. Allows bit, kbit, mbit, gbit, tbit, bps, kbps, mbps, gbps, tbps unit. bps means bytes per second.
+	Rate string `json:"rate" webhook:"Rate"`
 	// Limit is the number of bytes that can be queued waiting for tokens to become available.
 	// +kubebuilder:validation:Minimum=1
 	Limit uint32 `json:"limit"`
@@ -231,7 +223,28 @@ type BandwidthSpec struct {
 
 // ReorderSpec defines details of packet reorder.
 type ReorderSpec struct {
-	Reorder     string `json:"reorder"`
-	Correlation string `json:"correlation"`
+	Reorder string `json:"reorder" webhook:"FloatStr"`
+	// +optional
+	Correlation string `json:"correlation,omitempty" default:"0" webhook:"FloatStr"`
 	Gap         int    `json:"gap"`
+}
+
+// RateSpec defines details of rate limit.
+type RateSpec struct {
+	// Rate is the speed knob. Allows bit, kbit, mbit, gbit, tbit, bps, kbps, mbps, gbps, tbps unit. bps means bytes per second.
+	Rate string `json:"rate" webhook:"Rate"`
+}
+
+func (obj *NetworkChaos) GetSelectorSpecs() map[string]any {
+	selectors := map[string]any{
+		".": &obj.Spec.PodSelector,
+	}
+	if obj.Spec.Target != nil {
+		selectors[".Target"] = obj.Spec.Target
+	}
+	return selectors
+}
+
+func (obj *NetworkChaos) GetCustomStatus() any {
+	return &obj.Status.Instances
 }

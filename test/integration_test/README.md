@@ -1,39 +1,62 @@
-## Integration Test
+# Integration Test
 
-### Preparation
+## Preparation
+
+Run commands from the repository root. Use a disposable Linux test host and Kubernetes cluster because these tests inject faults and change configuration. The physical-machine case starts `chaosd` on the host and ends by running `killall chaosd`.
+
+The default suite requires a minikube cluster with the Docker driver, and locally built Chaos Mesh images loaded into its nodes. Install `minikube`, `docker`, `kubectl`, `helm`, `yq` v4, `openssl`, `curl`, `python3`, `envsubst`, `jq`, `ifconfig`, and `killall`. The physical-machine case runs an amd64 Linux `chaosd` binary and is skipped on aarch64.
+
+The [CI workflow](../../.github/workflows/integration_test.yml) uses one job and one minikube cluster. It runs the default suite first, then OIDC in a separate step. See the workflow for image build and loading steps.
+
+The `oidc` case deploys Keycloak, patches the minikube API server's OIDC settings, and reinstalls the dashboard with OIDC authentication. On a shared disposable cluster, run OIDC last. Reset the cluster before running the default suite again.
 
 1. Install Chaos Mesh
 
-You can install Chaos Mesh by commands:
+   You can install Chaos Mesh by commands:
+
+   ```bash
+   helm install --wait --create-namespace chaos-mesh helm/chaos-mesh -n=chaos-mesh \
+     --set images.tag=latest,controllerManager.chaosdSecurityMode=false
+   # Forward the dashboard port
+   kubectl port-forward -n chaos-mesh svc/chaos-dashboard 2333:2333 &
+   ```
+
+2. Install localstack & AWS client (optional)
+
+   LocalStack and the AWS CLI are required for the `aws` case, including a default suite run. Install them with:
+
+   ```bash
+   helm repo add localstack-repo http://helm.localstack.cloud
+   helm upgrade --install localstack localstack-repo/localstack --version 0.6.14
+   pip install awscli
+   ```
+
+   The `aws` case runs `aws configure set`, which would overwrite your default AWS CLI credentials and configuration. Before running this case or the default suite, use temporary files in the same shell:
+
+   ```bash
+   AWS_TEST_CONFIG_DIR=$(mktemp -d)
+   export AWS_CONFIG_FILE="${AWS_TEST_CONFIG_DIR}/config"
+   export AWS_SHARED_CREDENTIALS_FILE="${AWS_TEST_CONFIG_DIR}/credentials"
+   ```
+
+## Run the default suite
+
+After preparing the case dependencies above, run the default suite. It excludes the OIDC case:
 
 ```bash
-hack/local-up-chaos-mesh.sh
-kubectl set env deployment/chaos-dashboard SECURITY_MODE=true -n chaos-testing
-kubectl port-forward -n chaos-testing svc/chaos-dashboard 2333:2333 &
-```
-
-2. Install localstack && aws client(optional)
-
-It is required when run aws test. You can install localstack and aws client by command:
-
-```bash
-helm repo add localstack-repo http://helm.localstack.cloud
-helm upgrade --install localstack localstack-repo/localstack
-pip install awscli
-```
-
-### Run all tests
-
-Executing command below to run all test cases:
-
-```shell
 ./test/integration_test/run.sh
 ```
 
-### Run a specified test
+Run OIDC with a separate command. Stop any existing dashboard port-forward first because the OIDC script starts its own:
 
-Executing command below to run specified test cases:
+```bash
+bash test/integration_test/oidc/run.sh
+```
 
-```shell
+## Run a specified test
+
+To run one case, replace `${case_name}` with its directory name, such as `network` or `statuscheck`. Prepare only that case's dependencies:
+
+```bash
 ./test/integration_test/run.sh ${case_name}
 ```

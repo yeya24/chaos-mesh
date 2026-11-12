@@ -1,37 +1,33 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package config
 
 import (
 	"testing"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/chaos-mesh/chaos-mesh/pkg/config"
-	"github.com/chaos-mesh/chaos-mesh/pkg/webhook/config/watcher"
 )
 
 func TestValidations(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecsWithDefaultAndCustomReporters(t,
-		"Namespace scoped",
-		[]Reporter{envtest.NewlineReporter{}})
+	RunSpecs(t, "Namespace scoped")
 }
 
 var _ = Describe("Namespace-scoped Chaos", func() {
@@ -47,51 +43,8 @@ var _ = Describe("Namespace-scoped Chaos", func() {
 				{
 					name: "target namespace should not be empty with namespaced scope",
 					config: config.ChaosControllerConfig{
-						WatcherConfig: &watcher.Config{
-							ClusterScoped:     false,
-							TemplateNamespace: "",
-							TargetNamespace:   "",
-							TemplateLabels:    nil,
-							ConfigLabels:      nil,
-						},
 						ClusterScoped:   false,
 						TargetNamespace: "",
-					},
-					expectValid: false,
-				},
-				{
-					name: "Watcher Config is always required",
-					config: config.ChaosControllerConfig{
-						WatcherConfig:   nil,
-						ClusterScoped:   true,
-						TargetNamespace: "",
-					},
-					expectValid: false,
-				},
-				{
-					name: "clusterScope should keep constant",
-					config: config.ChaosControllerConfig{
-						WatcherConfig: &watcher.Config{
-							ClusterScoped:     false,
-							TemplateNamespace: "",
-							TargetNamespace:   "",
-							TemplateLabels:    nil,
-							ConfigLabels:      nil,
-						},
-						ClusterScoped:   true,
-						TargetNamespace: "",
-					},
-					expectValid: false,
-				},
-				{
-					name: "ns should keep constant",
-					config: config.ChaosControllerConfig{
-						WatcherConfig: &watcher.Config{
-							ClusterScoped:   false,
-							TargetNamespace: "ns1",
-						},
-						ClusterScoped:   false,
-						TargetNamespace: "ns2",
 					},
 					expectValid: false,
 				},
@@ -109,32 +62,3 @@ var _ = Describe("Namespace-scoped Chaos", func() {
 		})
 	})
 })
-
-// TODO: reuse this function
-func newPod(
-	name string,
-	status v1.PodPhase,
-	namespace string,
-	ans map[string]string,
-	ls map[string]string,
-	nodename string,
-) v1.Pod {
-	return v1.Pod{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "Pod",
-			APIVersion: "v1",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   namespace,
-			Labels:      ls,
-			Annotations: ans,
-		},
-		Spec: v1.PodSpec{
-			NodeName: nodename,
-		},
-		Status: v1.PodStatus{
-			Phase: status,
-		},
-	}
-}

@@ -1,83 +1,294 @@
+# If you update this file, please follow
+# https://suva.sh/posts/well-documented-makefiles
+
+## --------------------------------------
+## General
+## --------------------------------------
+
+.DEFAULT_GOAL:=help
+
+# Go ignores v2 release tags because the module path has no /v2 suffix.
+RELEASE_TAG := $(shell git describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null)
+
 # Set DEBUGGER=1 to build debug symbols
-LDFLAGS = $(if $(IMG_LDFLAGS),$(IMG_LDFLAGS),$(if $(DEBUGGER),,-s -w) $(shell ./hack/version.sh))
-DOCKER_REGISTRY ?= "localhost:5000"
+ifeq ($(strip $(LDFLAGS)),)
+BUILD_DATE := $(shell python3 -c 'import datetime, os, time; \
+	print(datetime.datetime.fromtimestamp(int(os.getenv("SOURCE_DATE_EPOCH") or time.time()), \
+	datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')
+ifeq ($(BUILD_DATE),)
+$(error Failed to compute BUILD_DATE)
+endif
+LDFLAGS := $(if $(DEBUGGER),,-s -w) \
+	-X github.com/chaos-mesh/chaos-mesh/pkg/version.buildDate=$(BUILD_DATE) \
+	$(if $(RELEASE_TAG),-X github.com/chaos-mesh/chaos-mesh/pkg/version.gitVersion=$(RELEASE_TAG))
+endif
+export LDFLAGS
 
-# SET DOCKER_REGISTRY to change the docker registry
-DOCKER_REGISTRY_PREFIX := $(if $(DOCKER_REGISTRY),$(DOCKER_REGISTRY)/,)
-DOCKER_BUILD_ARGS := --build-arg HTTP_PROXY=${HTTP_PROXY} --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg UI=${UI} --build-arg SWAGGER=${SWAGGER} --build-arg LDFLAGS="${LDFLAGS}" --build-arg CRATES_MIRROR="${CRATES_MIRROR}"
-
-GOVER_MAJOR := $(shell go version | sed -E -e "s/.*go([0-9]+)[.]([0-9]+).*/\1/")
-GOVER_MINOR := $(shell go version | sed -E -e "s/.*go([0-9]+)[.]([0-9]+).*/\2/")
-GO111 := $(shell [ $(GOVER_MAJOR) -gt 1 ] || [ $(GOVER_MAJOR) -eq 1 ] && [ $(GOVER_MINOR) -ge 11 ]; echo $$?)
-
-IMAGE_TAG := $(if $(IMAGE_TAG),$(IMAGE_TAG),latest)
+export IMAGE_TAG ?= latest
+export IMAGE_BUILD ?= 1
 
 ROOT=$(shell pwd)
-OUTPUT_BIN=$(ROOT)/output/bin
-KUSTOMIZE_BIN=$(OUTPUT_BIN)/kustomize
-KUBEBUILDER_BIN=$(OUTPUT_BIN)/kubebuilder
-KUBECTL_BIN=$(OUTPUT_BIN)/kubectl
-HELM_BIN=$(OUTPUT_BIN)/helm
 
-ifeq ($(GO111), 1)
-$(error Please upgrade your Go compiler to 1.11 or higher version)
-endif
+export IMAGE_BUILD_ENV_BUILD ?= 0
+export IMAGE_DEV_ENV_BUILD ?= 0
 
-# Enable GO111MODULE=on explicitly, disable it with GO111MODULE=off when necessary.
-export GO111MODULE := on
-GOOS := $(if $(GOOS),$(GOOS),"")
-GOARCH := $(if $(GOARCH),$(GOARCH),"")
-GOENV  := GO15VENDOREXPERIMENT="1" CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH)
-CGOENV  := GO15VENDOREXPERIMENT="1" CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH)
+export GOPROXY := $(if $(GOPROXY),$(GOPROXY),https://proxy.golang.org,direct)
+GOENV  := CGO_ENABLED=0
+CGOENV := CGO_ENABLED=1
 GO     := $(GOENV) go
 CGO    := $(CGOENV) go
-GOTEST := TEST_USE_EXISTING_CLUSTER=false NO_PROXY="${NO_PROXY},testhost" go test
-SHELL    := bash
+GOTEST := USE_EXISTING_CLUSTER=false NO_PROXY="$(NO_PROXY),testhost" go test
+SHELL  := bash
 
-PACKAGE_LIST := echo $$(go list ./... | grep -vE "chaos-mesh/test|pkg/ptrace|zz_generated|vendor") github.com/chaos-mesh/chaos-mesh/api/v1alpha1
+PACKAGE_LIST := echo $$(go list -buildvcs=false ./... | grep -vE "chaos-mesh/test|pkg/ptrace|zz_generated|vendor") $$(cd api && go list -buildvcs=false ./...)
 
-# Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
-CRD_OPTIONS ?= "crd:trivialVersions=true,preserveUnknownFields=false"
-
-# Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
-ifeq (,$(shell go env GOBIN))
-GOBIN=$(shell go env GOPATH)/bin
-else
-GOBIN=$(shell go env GOBIN)
-endif
-
-FAILPOINT_ENABLE  := $$(find $$PWD/ -type d | grep -vE "(\.git|bin)" | xargs $(GOBIN)/failpoint-ctl enable)
-FAILPOINT_DISABLE := $$(find $$PWD/ -type d | grep -vE "(\.git|bin)" | xargs $(GOBIN)/failpoint-ctl disable)
-
-GO_BUILD_CACHE ?= $(HOME)/.cache/chaos-mesh
+export GO_BUILD_CACHE ?= $(ROOT)/.cache/chaos-mesh
 
 BUILD_TAGS ?=
-
-ifeq ($(SWAGGER),1)
-	BUILD_TAGS += swagger_server
-endif
 
 ifeq ($(UI),1)
 	BUILD_TAGS += ui_server
 endif
 
-CLEAN_TARGETS :=
+# See https://github.com/chaos-mesh/chaos-mesh/pull/4004 for more details.
+ifeq (,$(findstring local/,$(MAKECMDGOALS)))
 
-all: manifests/crd.yaml image
-go_build_cache_directory:
-	mkdir -p $(GO_BUILD_CACHE)/chaos-mesh-gobuild
-	mkdir -p $(GO_BUILD_CACHE)/chaos-mesh-gopath
+# Each branch should have its own image tag for build-env and dev-env
+# Use := with ifeq instead of = for performance issues (simply expanded)
+ifeq ($(IMAGE_BUILD_ENV_TAG),)
+export IMAGE_BUILD_ENV_TAG := $(shell ./hack/env-image-tag.sh build-env)
+endif
+ifeq ($(IMAGE_DEV_ENV_TAG),)
+export IMAGE_DEV_ENV_TAG := $(shell ./hack/env-image-tag.sh dev-env)
+endif
 
-check: fmt vet boilerplate lint generate manifests/crd.yaml tidy
+endif
 
-# Run tests
-test: failpoint-enable generate generate-mock manifests test-utils
-	rm -rf cover.* cover
-	$(GOTEST) $$($(PACKAGE_LIST)) -coverprofile cover.out.tmp
-	cat cover.out.tmp | grep -v "_generated.deepcopy.go" > cover.out
-	@$(FAILPOINT_DISABLE)
+BASIC_IMAGE_ENV=IMAGE_DEV_ENV_TAG=$(IMAGE_DEV_ENV_TAG) \
+	IMAGE_BUILD_ENV_TAG=$(IMAGE_BUILD_ENV_TAG) \
+	IMAGE_TAG=$(IMAGE_TAG) TARGET_PLATFORM=$(TARGET_PLATFORM) \
+	GO_BUILD_CACHE=$(GO_BUILD_CACHE)
 
-test-utils: timer multithread_tracee
+RUN_IN_DEV_SHELL:=$(shell $(BASIC_IMAGE_ENV)\
+	$(ROOT)/build/get_env_shell.py dev-env)
+RUN_IN_BUILD_SHELL:=$(shell $(BASIC_IMAGE_ENV)\
+	$(ROOT)/build/get_env_shell.py build-env)
+
+# See https://github.com/chaos-mesh/chaos-mesh/pull/4004 for more details.
+ifeq (,$(findstring local/,$(MAKECMDGOALS)))
+
+# Include generated makefiles.
+# These sub makefiles depend on RUN_IN_DEV_SHELL and RUN_IN_BUILD_SHELL, so it should be included after them.
+include binary.generated.mk container-image.generated.mk
+
+endif
+
+include local-binary.generated.mk
+
+export CLEAN_TARGETS :=
+
+# The help will print out all targets with their descriptions organized bellow their categories. The categories are represented by `##@` and the target descriptions by `##`.
+# The awk commands is responsible to read the entire set of makefiles included in this invocation, looking for lines of the file as xyz: ## something, and then pretty-format the target and help. Then, if there's a line with ##@ something, that gets pretty-printed as a category.
+# More info over the usage of ANSI control characters for terminal formatting: https://en.wikipedia.org/wiki/ANSI_escape_code#SGR_parameters
+# More info over awk command: http://linuxcommand.org/lc3_adv_awk.php
+#
+# Notice that we have a little modification on the awk command to support slash in the recipe name:
+# origin: /^[a-zA-Z_0-9-]+:.*?##/
+# modified /^[a-zA-Z_0-9\/\.-]+:.*?##/
+.PHONY: help
+help: ## Display this help
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9\/\.-]+:.*?##/ { printf "  \033[36m%-21s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+
+##@ Code generation
+
+.PHONY: config
+config: SHELL:=$(RUN_IN_DEV_SHELL)
+config: images/dev-env/.dockerbuilt ## Generate CRD manifests with controller-gen
+	cd ./api ;\
+		controller-gen crd:ignoreUnexportedFields=true,crdVersions=v1 rbac:roleName=manager-role paths="./..." output:crd:artifacts:config=../config/crd/bases ;\
+		rm ../helm/chaos-mesh/crds/* && cp ../config/crd/bases/* ../helm/chaos-mesh/crds
+
+chaos-build: SHELL:=$(RUN_IN_DEV_SHELL)
+chaos-build: bin/chaos-builder ## Generate codes for CustomResource Kinds under api/v1alpha1
+	bin/chaos-builder
+
+.PHONY: generate
+generate: manifests/crd.yaml generate-deepcopy generate-client swagger_spec ## Generate codes for codebase, including CRD manifests, deepcopy files, chaos mesh controller code generation, swager spec.
+
+.PHONY: generate-makefile
+generate-makefile: ## Generate makefile (binary.generated.mk, container-image.generated.mk)
+	@$(GO) run ./cmd/generate-makefile
+
+.PHONY: generate-deepcopy
+generate-deepcopy: SHELL:=$(RUN_IN_DEV_SHELL)
+generate-deepcopy: chaos-build ## Generate deepcopy files for CRD Kind with controller-gen
+	cd ./api ;\
+		controller-gen object:headerFile=../hack/boilerplate/boilerplate.generatego.txt paths="./..." ;
+
+CLIENT_GEN_PLURAL_EXCEPTIONS := PodChaos:podchaos,HTTPChaos:httpchaos,IOChaos:iochaos,AWSChaos:awschaos,JVMChaos:jvmchaos,StressChaos:stresschaos,AzureChaos:azurechaos,PodHttpChaos:podhttpchaos,GCPChaos:gcpchaos,NetworkChaos:networkchaos,KernelChaos:kernelchaos,TimeChaos:timechaos,BlockChaos:blockchaos,PodIOChaos:podiochaos,PodNetworkChaos:podnetworkchaos
+
+generate-client: generate-clientset generate-informer generate-lister
+
+generate-clientset: SHELL:=$(RUN_IN_DEV_SHELL)
+generate-clientset:
+	@$(GO) tool client-gen --input=github.com/chaos-mesh/chaos-mesh/api/v1alpha1 \
+		--input-base= --output-dir=./pkg/client \
+		--output-pkg=github.com/chaos-mesh/chaos-mesh/pkg/client/ \
+		--clientset-name=versioned --go-header-file=./hack/boilerplate/boilerplate.generatego.txt \
+		--fake-clientset=true \
+		--plural-exceptions=$(CLIENT_GEN_PLURAL_EXCEPTIONS)
+
+generate-lister: SHELL:=$(RUN_IN_DEV_SHELL)
+generate-lister:
+	@$(GO) tool lister-gen \
+		github.com/chaos-mesh/chaos-mesh/api/v1alpha1 \
+		--output-dir=./pkg/client/listers \
+		--output-pkg=github.com/chaos-mesh/chaos-mesh/pkg/client/listers \
+		--go-header-file=./hack/boilerplate/boilerplate.generatego.txt \
+		--plural-exceptions=$(CLIENT_GEN_PLURAL_EXCEPTIONS)
+
+
+generate-informer: SHELL:=$(RUN_IN_DEV_SHELL)
+generate-informer:
+	@$(GO) tool informer-gen \
+		github.com/chaos-mesh/chaos-mesh/api/v1alpha1 \
+		--output-dir=./pkg/client/informers \
+		--output-pkg=github.com/chaos-mesh/chaos-mesh/pkg/client/informers \
+		--go-header-file=./hack/boilerplate/boilerplate.generatego.txt \
+		--versioned-clientset-package=github.com/chaos-mesh/chaos-mesh/pkg/client/versioned \
+		--listers-package=github.com/chaos-mesh/chaos-mesh/pkg/client/listers \
+		--plural-exceptions=$(CLIENT_GEN_PLURAL_EXCEPTIONS)
+
+.PHONY: manifests/crd.yaml
+manifests/crd.yaml: SHELL:=$(RUN_IN_DEV_SHELL)
+manifests/crd.yaml: config ## Generate the combined CRD manifests
+	kustomize build config/default > manifests/crd.yaml
+
+.PHONY: proto
+proto: SHELL:=$(RUN_IN_DEV_SHELL)
+proto: images/dev-env/.dockerbuilt ## Generate .go files from .proto files
+	for dir in pkg/chaosdaemon pkg/chaoskernel ; do\
+		protoc -I $$dir/pb $$dir/pb/*.proto -I /usr/local/include --go_out=plugins=grpc,paths=source_relative:$$dir/pb ;\
+	done
+
+.PHONY: swagger_spec
+swagger_spec: SHELL:=$(RUN_IN_DEV_SHELL)
+swagger_spec: images/dev-env/.dockerbuilt ## Generate OpenAPI/Swagger spec for frontend
+	swag init -g cmd/chaos-dashboard/main.go --output pkg/dashboard/swaggerdocs --pd
+
+##@ Linters, formatters and others
+
+check: generate vet lint fmt tidy helm-values-schema ## Run prerequisite checks for PR
+
+.PHONY: fmt
+fmt: SHELL:=$(RUN_IN_DEV_SHELL)
+fmt: images/dev-env/.dockerbuilt ## Reformat go files with goimports
+	find . -type f -name '*.go' \
+    -not -path './.cache/**' -not -path '**/zz_generated.*.go' \
+    -not -path './pkg/client/**' -not -path '**/*.pb.go' \
+    -exec goimports -w -l -local github.com/chaos-mesh/chaos-mesh {} +
+
+.PHONY: gosec-scan
+gosec-scan: SHELL:=$(RUN_IN_DEV_SHELL)
+gosec-scan: images/dev-env/.dockerbuilt
+	gosec ./api/... ./controllers/... ./pkg/... || echo "** gosec-scan found issues (non-blocking): please check the report above; this does NOT fail the build **"
+
+.PHONY: lint
+lint: SHELL:=$(RUN_IN_DEV_SHELL)
+lint: images/dev-env/.dockerbuilt ## Lint go files with revive
+	revive -formatter friendly -config revive.toml $$($(PACKAGE_LIST))
+
+.PHONY: tidy
+tidy: SHELL:=$(RUN_IN_DEV_SHELL)
+tidy: images/dev-env/.dockerbuilt ## Run go mod tidy in all submodules
+	go mod tidy
+	git diff -U --exit-code go.mod go.sum
+	cd api; go mod tidy; git diff -U --exit-code go.mod go.sum
+	cd e2e-test; go mod tidy; git diff -U --exit-code go.mod go.sum
+	cd e2e-test/cmd/e2e_helper; go mod tidy; git diff -U --exit-code go.mod go.sum
+
+.PHONY: vet
+vet: SHELL:=$(RUN_IN_DEV_SHELL)
+vet: images/dev-env/.dockerbuilt ## Lint go files with go vet in all modules
+	$(CGOENV) go vet ./...
+	cd api && $(CGOENV) go vet ./...
+	cd e2e-test && $(CGOENV) go vet ./...
+	cd e2e-test/cmd/e2e_helper && $(CGOENV) go vet ./...
+
+helm-values-schema: SHELL:=$(RUN_IN_DEV_SHELL)
+helm-values-schema: images/dev-env/.dockerbuilt
+	helm schema -f helm/chaos-mesh/values.yaml --output helm/chaos-mesh/values.schema.json
+
+helm-check: SHELL:=$(RUN_IN_DEV_SHELL)
+helm-check: helm-values-schema
+	helm lint helm/chaos-mesh
+	helm template chaos-mesh helm/chaos-mesh --namespace chaos-mesh > /dev/null
+
+##@ Common used building targets
+
+.PHONY: all
+all: manifests/crd.yaml image ## Build all CRD yaml manifests and components container images
+
+.PHONY: image
+image: image-chaos-daemon image-chaos-mesh image-chaos-dashboard $(if $(DEBUGGER), image-chaos-dlv) ## Build container images for Chaos Mesh components (chaos-controller-manager, chaos-daemon, chaos-dashboard)
+
+ui: pnpm_install_dependencies ## Build the frontend UI of Chaos Dashboard
+ifeq (${UI},1)
+	cd ui &&\
+	pnpm build
+	hack/embed_ui_assets.sh
+endif
+
+##@ Cleanup
+
+.PHONY: clean
+clean: clean-binary clean-image-built ## Cleanup artifacts
+	rm -rf $(CLEAN_TARGETS)
+
+##@ Tests
+
+CLEAN_TARGETS += cover.out cover.out.tmp
+
+coverage: SHELL:=$(RUN_IN_DEV_SHELL)
+coverage: images/dev-env/.dockerbuilt ## Generate coverage report
+ifeq ("$(CI)", "1")
+	@bash <(curl -s https://codecov.io/bash) -f cover.out -t $(CODECOV_TOKEN)
+else
+	mkdir -p cover
+# failpoint-disable removes generated binding sources referenced by cover.out.
+	grep -v '__failpoint_binding__\.go:' cover.out | go tool cover -html=/dev/stdin -o cover/index.html
+endif
+
+GINKGO_FLAGS ?=
+PAUSE_IMAGE ?= gcr.io/google-containers/pause:latest
+e2e: e2e-build ## Run e2e tests in current kubernetes cluster
+	./e2e-test/image/e2e/bin/ginkgo ${GINKGO_FLAGS} ./e2e-test/image/e2e/bin/e2e.test -- --e2e-image ghcr.io/chaos-mesh/e2e-helper:${IMAGE_TAG} --pause-image ${PAUSE_IMAGE}
+
+define failpoint-ctl
+	find $(ROOT)/* -type d | grep -vE "(\.git|bin|\.cache|ui)" | xargs failpoint-ctl $1
+endef
+
+.PHONY: failpoint-enable
+failpoint-enable: SHELL:=$(RUN_IN_DEV_SHELL)
+failpoint-enable: images/dev-env/.dockerbuilt ## Enable failpoint stub for testing
+	$(call failpoint-ctl,enable)
+
+.PHONY: failpoint-disable
+failpoint-disable: SHELL:=$(RUN_IN_DEV_SHELL)
+failpoint-disable: images/dev-env/.dockerbuilt ## Disable failpoint stub for testing
+	$(call failpoint-ctl,disable)
+
+.PHONY: test
+test: SHELL:=$(RUN_IN_DEV_SHELL)
+test: generate test-utils ## Run unit tests
+	$(call failpoint-ctl,enable)
+	CGO_ENABLED=1 $(GOTEST) -p 1 $$($(PACKAGE_LIST)) -coverprofile cover.out.tmp -covermode=atomic
+	grep -v "_generated.deepcopy.go" cover.out.tmp > cover.out
+	$(call failpoint-ctl,disable)
+
+##@ Advanced building targets
+
+test-utils: timer multithread_tracee pkg/time/fakeclock/fake_clock_gettime.o pkg/time/fakeclock/fake_gettimeofday.o
 
 timer:
 	$(GO) build -ldflags '$(LDFLAGS)' -o bin/test/timer ./test/cmd/timer/*.go
@@ -85,327 +296,70 @@ timer:
 multithread_tracee: test/cmd/multithread_tracee/main.c
 	cc test/cmd/multithread_tracee/main.c -lpthread -O2 -o ./bin/test/multithread_tracee
 
-mockgen:
-	GO111MODULE=on go get github.com/golang/mock/mockgen@v1.5.0
-
-generate-mock: mockgen
-	go generate ./pkg/workflow
-	make fmt vet lint
-
-coverage:
-ifeq ("$(CI)", "1")
-	@bash <(curl -s https://codecov.io/bash) -f cover.out -t $(CODECOV_TOKEN)
-else
-	mkdir -p cover
-	gocov convert cover.out > cover.json
-	gocov-xml < cover.json > cover.xml
-	gocov-html < cover.json > cover/index.html
-endif
-
-swagger_spec:
-ifeq (${SWAGGER},1)
-	hack/generate_swagger_spec.sh
-endif
-
-yarn_dependencies:
+pnpm_install_dependencies:
 ifeq (${UI},1)
 	cd ui &&\
-	yarn install --frozen-lockfile
+	pnpm install --frozen-lockfile
 endif
 
-ui: yarn_dependencies
-ifeq (${UI},1)
-	cd ui &&\
-	yarn build
-	hack/embed_ui_assets.sh
-endif
-
-watchmaker:
+watchmaker: pkg/time/fakeclock/fake_clock_gettime.o pkg/time/fakeclock/fake_gettimeofday.o
 	$(CGO) build -ldflags '$(LDFLAGS)' -o bin/watchmaker ./cmd/watchmaker/...
 
-# Build chaosctl
-chaosctl:
-	$(GO) build -ldflags '$(LDFLAGS)' -o bin/chaosctl ./cmd/chaosctl/*.go
+e2e-image: image-e2e-helper ## Build e2e test helper image
 
-# Run against the configured Kubernetes cluster in ~/.kube/config
-run: generate fmt vet manifests
-	$(GO) run ./cmd/controller-manager/main.go
+enter-buildenv: SHELL:=$(shell $(BASIC_IMAGE_ENV) $(ROOT)/build/get_env_shell.py --interactive build-env)
+enter-buildenv: image-build-env
+	@bash
 
-NAMESPACE ?= chaos-testing
-# Install CRDs into a cluster
-install: manifests
-	$(KUBECTL_BIN) apply -f manifests/crd.yaml
-	$(HELM_BIN) upgrade --install chaos-mesh helm/chaos-mesh --namespace=${NAMESPACE} --set registry=${DOCKER_REGISTRY} --set dnsServer.create=true --set dashboard.create=true;
+enter-devenv: SHELL:=$(shell $(BASIC_IMAGE_ENV) $(ROOT)/build/get_env_shell.py --interactive dev-env)
+enter-devenv: images/dev-env/.dockerbuilt
+	@bash
 
-# Generate manifests e.g. CRD, RBAC etc.
-config: $(GOBIN)/controller-gen
-	cd ./api/v1alpha1 ;\
-		$< $(CRD_OPTIONS) rbac:roleName=manager-role paths="./..." output:crd:artifacts:config=../../config/crd/bases ;\
-		$< $(CRD_OPTIONS) rbac:roleName=manager-role paths="./..." output:crd:artifacts:config=../../helm/chaos-mesh/crds ;
-
-# Run go fmt against code
-fmt: groupimports
-	$(CGO) fmt ./...
-
-gosec-scan: $(GOBIN)/gosec
-	$(GOENV) $< ./api/... ./controllers/... ./pkg/... || echo "*** sec-scan failed: known-issues ***"
-
-groupimports: $(GOBIN)/goimports
-	$< -w -l -local github.com/chaos-mesh/chaos-mesh .
-
-failpoint-enable: $(GOBIN)/failpoint-ctl
-# Converting gofail failpoints...
-	@$(FAILPOINT_ENABLE)
-
-failpoint-disable: $(GOBIN)/failpoint-ctl
-# Restoring gofail failpoints...
-	@$(FAILPOINT_DISABLE)
-
-# Run go vet against code
-vet:
-	$(CGOENV) go vet ./...
-
-tidy: clean
-	@echo "go mod tidy"
-	GO111MODULE=on go mod tidy
-	git diff -U --exit-code go.mod go.sum
-
-install.sh:
-	./hack/update_install_script.sh
-
-check-install-script: install.sh
-	git diff -U --exit-code install.sh
-
-clean:
-	rm -rf docs/docs.go $(CLEAN_TARGETS)
-
-boilerplate:
-	./hack/verify-boilerplate.sh
-
-image: image-chaos-daemon image-chaos-mesh image-chaos-dashboard
-
-e2e-image: image-e2e-helper
-
-GO_TARGET_PHONY :=
-
-BINARIES :=
-
-define COMPILE_GO_TEMPLATE
-ifeq ($(IN_DOCKER),1)
-
-$(1): $(4)
-ifeq ($(3),1)
-	$(CGO) build -ldflags "$(LDFLAGS)" -tags "${BUILD_TAGS}" -o $(1) $(2)
-else
-	$(GO) build -ldflags "$(LDFLAGS)" -tags "${BUILD_TAGS}" -o $(1) $(2)
-endif
-
-endif
-GO_TARGET_PHONY += $(1)
-endef
-
-BUILD_INDOCKER_ARG := --env IN_DOCKER=1
-ifeq ($(DOCKER_HOST),)
-    BUILD_INDOCKER_ARG += --volume $(ROOT):/mnt --user $(shell id -u):$(shell id -g)
-else
-	CLEAN_TARGETS += Dockerfile
-endif
-
-ifneq ($(GO_BUILD_CACHE),)
-	BUILD_INDOCKER_ARG += --volume $(GO_BUILD_CACHE)/chaos-mesh-gopath:/tmp/go
-	BUILD_INDOCKER_ARG += --volume $(GO_BUILD_CACHE)/chaos-mesh-gobuild:/tmp/go-build
-endif
-
-define BUILD_IN_DOCKER_TEMPLATE
-CLEAN_TARGETS += $(2)
-ifneq ($(IN_DOCKER),1)
-
-$(2): image-build-env go_build_cache_directory
-	[[ "$(DOCKER_HOST)" == "" ]] || (printf "\
-	FROM ${DOCKER_REGISTRY_PREFIX}pingcap/build-env:${IMAGE_TAG} \n\
-	RUN rm -rf /mnt \n\
-	COPY ./ /mnt \n"\
-	> Dockerfile; docker build . -t ${DOCKER_REGISTRY_PREFIX}pingcap/build-env:${IMAGE_TAG})
-
-	DOCKER_ID=$$$$(docker run -d \
-		$(BUILD_INDOCKER_ARG) \
-		${DOCKER_REGISTRY_PREFIX}pingcap/build-env:${IMAGE_TAG} \
-		sleep infinity); \
-	docker exec --workdir /mnt/ \
-		--env IMG_LDFLAGS="${LDFLAGS}" \
-		--env UI=${UI} --env SWAGGER=${SWAGGER} \
-		$$$$DOCKER_ID /usr/bin/make $(2) && \
-	([[ "$(DOCKER_HOST)" == "" ]] || docker cp $$$$DOCKER_ID:/mnt/$(2) $(2)) && \
-	docker rm -f $$$$DOCKER_ID
-endif
-
-image-$(1)-dependencies := $(image-$(1)-dependencies) $(2)
-BINARIES := $(BINARIES) $(2)
-endef
-
-ifeq ($(IN_DOCKER),1)
-images/chaos-daemon/bin/pause: hack/pause.c
+images/chaos-daemon/bin/pause: SHELL:=$(RUN_IN_BUILD_SHELL)
+images/chaos-daemon/bin/pause: hack/pause.c images/build-env/.dockerbuilt ## Build binary pause
 	cc ./hack/pause.c -o images/chaos-daemon/bin/pause
-endif
-$(eval $(call BUILD_IN_DOCKER_TEMPLATE,chaos-daemon,images/chaos-daemon/bin/pause))
 
-$(eval $(call BUILD_IN_DOCKER_TEMPLATE,chaos-daemon,images/chaos-daemon/bin/chaos-daemon))
-$(eval $(call COMPILE_GO_TEMPLATE,images/chaos-daemon/bin/chaos-daemon,./cmd/chaos-daemon/main.go,1))
+.PHONY: pkg/time/fakeclock/fake_clock_gettime.o
+pkg/time/fakeclock/fake_clock_gettime.o: SHELL:=$(RUN_IN_BUILD_SHELL)
+pkg/time/fakeclock/fake_clock_gettime.o: pkg/time/fakeclock/fake_clock_gettime.c images/build-env/.dockerbuilt
+	[[ "$$TARGET_PLATFORM" == "arm64" ]] && CFLAGS="-mcmodel=tiny" ;\
+	cc -c ./pkg/time/fakeclock/fake_clock_gettime.c -fPIE -O2 -o pkg/time/fakeclock/fake_clock_gettime.o $$CFLAGS
+pkg/time/fakeclock/fake_gettimeofday.o: SHELL:=$(RUN_IN_BUILD_SHELL)
+pkg/time/fakeclock/fake_gettimeofday.o: pkg/time/fakeclock/fake_gettimeofday.c images/build-env/.dockerbuilt
+	[[ "$$TARGET_PLATFORM" == "arm64" ]] && CFLAGS="-mcmodel=tiny" ;\
+	cc -c ./pkg/time/fakeclock/fake_gettimeofday.c -fPIE -O2 -o pkg/time/fakeclock/fake_gettimeofday.o $$CFLAGS
 
-$(eval $(call BUILD_IN_DOCKER_TEMPLATE,chaos-dashboard,images/chaos-dashboard/bin/chaos-dashboard))
-$(eval $(call COMPILE_GO_TEMPLATE,images/chaos-dashboard/bin/chaos-dashboard,./cmd/chaos-dashboard/main.go,1,ui swagger_spec))
+CLEAN_TARGETS += e2e-test/image/e2e/manifests e2e-test/image/e2e/chaos-mesh
 
-$(eval $(call BUILD_IN_DOCKER_TEMPLATE,chaos-mesh,images/chaos-mesh/bin/chaos-controller-manager))
-$(eval $(call COMPILE_GO_TEMPLATE,images/chaos-mesh/bin/chaos-controller-manager,./cmd/chaos-controller-manager/main.go,0))
+.PHONY: e2e-test/image/e2e/manifests
+e2e-test/image/e2e/manifests: ## Copy CRD manifests to e2e image build directory
+	rm -rf e2e-test/image/e2e/manifests
+	cp -r manifests e2e-test/image/e2e
 
-prepare-install: all docker-push docker-push-dns-server
+e2e-test/image/e2e/chaos-mesh: helm/chaos-mesh ## Copy helm chart to e2e image build directory
+	rm -rf e2e-test/image/e2e/chaos-mesh
+	cp -r helm/chaos-mesh e2e-test/image/e2e
 
-prepare-e2e: e2e-image docker-push-e2e
+CLEAN_TARGETS+=e2e-test/image/e2e/bin/ginkgo
+e2e-test/image/e2e/bin/ginkgo: SHELL:=$(RUN_IN_DEV_SHELL)
+e2e-test/image/e2e/bin/ginkgo: images/dev-env/.dockerbuilt
+	mkdir -p e2e-test/image/e2e/bin
+	cp /go/bin/ginkgo e2e-test/image/e2e/bin/ginkgo
 
-GINKGO_FLAGS ?=
-e2e: e2e-build
-	./test/image/e2e/bin/ginkgo ${GINKGO_FLAGS} ./test/image/e2e/bin/e2e.test -- --e2e-image ${DOCKER_REGISTRY_PREFIX}pingcap/e2e-helper:${IMAGE_TAG}
+CLEAN_TARGETS+=e2e-test/image/e2e/bin/e2e.test
+e2e-test/image/e2e/bin/e2e.test: SHELL:=$(RUN_IN_DEV_SHELL)
+e2e-test/image/e2e/bin/e2e.test: images/dev-env/.dockerbuilt
+	cd e2e-test && $(GO) test -c  -o ./image/e2e/bin/e2e.test ./e2e
 
-image-chaos-mesh-e2e-dependencies += test/image/e2e/manifests test/image/e2e/chaos-mesh e2e-build
-CLEAN_TARGETS += test/image/e2e/manifests test/image/e2e/chaos-mesh
+CLEAN_TARGETS+=e2e-test/image/e2e/bin/e2e-gherkin.test
+e2e-test/image/e2e/bin/e2e-gherkin.test: SHELL:=$(RUN_IN_DEV_SHELL)
+e2e-test/image/e2e/bin/e2e-gherkin.test: images/dev-env/.dockerbuilt
+	mkdir -p e2e-test/image/e2e/bin
+	cd e2e-test && $(GO) test -c  -o ./image/e2e/bin/e2e-gherkin.test ./e2e-gherkin
 
-e2e-build: test/image/e2e/bin/ginkgo test/image/e2e/bin/e2e.test
+e2e-build: e2e-test/image/e2e/bin/ginkgo e2e-test/image/e2e/bin/e2e.test e2e-test/image/e2e/bin/e2e-gherkin.test ## Build e2e test binary
 
-CLEAN_TARGETS+=test/image/e2e/bin/ginkgo
-test/image/e2e/bin/ginkgo:
-	$(GO) build -ldflags "$(LDFLAGS)" -tags "${BUILD_TAGS}" -o test/image/e2e/bin/ginkgo github.com/onsi/ginkgo/ginkgo
-
-CLEAN_TARGETS+=test/image/e2e/bin/e2e.test
-test/image/e2e/bin/e2e.test:
-	$(GO) test -c  -o ./test/image/e2e/bin/e2e.test ./test/e2e
-
-test/image/e2e/manifests: manifests
-	rm -rf test/image/e2e/manifests
-	cp -r manifests test/image/e2e
-
-test/image/e2e/chaos-mesh: helm/chaos-mesh
-	rm -rf test/image/e2e/chaos-mesh
-	cp -r helm/chaos-mesh test/image/e2e
-
-define IMAGE_TEMPLATE
-CLEAN_TARGETS += $(2)/.dockerbuilt
-
-image-$(1): $(2)/.dockerbuilt
-
-$(2)/.dockerbuilt:$(image-$(1)-dependencies) $(2)/Dockerfile
-ifeq ($(DOCKER_CACHE),1)
-
-ifneq ($(DISABLE_CACHE_FROM),1)
-	DOCKER_BUILDKIT=1 DOCKER_CLI_EXPERIMENTAL=enabled docker buildx build --load --cache-to type=local,dest=$(DOCKER_CACHE_DIR)/image-$(1) --cache-from type=local,src=$(DOCKER_CACHE_DIR)/image-$(1) -t ${DOCKER_REGISTRY_PREFIX}pingcap/$(1):${IMAGE_TAG} ${DOCKER_BUILD_ARGS} $(2)
-else
-	DOCKER_BUILDKIT=1 DOCKER_CLI_EXPERIMENTAL=enabled docker buildx build --load --cache-to type=local,dest=$(DOCKER_CACHE_DIR)/image-$(1) -t ${DOCKER_REGISTRY_PREFIX}pingcap/$(1):${IMAGE_TAG} ${DOCKER_BUILD_ARGS} $(2)
-endif
-
-else ifneq ($(TARGET_PLATFORM),)
-	DOCKER_BUILDKIT=1 docker buildx build --load --platform linux/$(TARGET_PLATFORM) -t ${DOCKER_REGISTRY_PREFIX}pingcap/$(1):${IMAGE_TAG} --build-arg TARGET_PLATFORM=$(TARGET_PLATFORM) ${DOCKER_BUILD_ARGS} $(2)
-else
-	DOCKER_BUILDKIT=1 docker build -t ${DOCKER_REGISTRY_PREFIX}pingcap/$(1):${IMAGE_TAG} ${DOCKER_BUILD_ARGS} $(2)
-endif
-	touch $(2)/.dockerbuilt
-endef
-
-$(eval $(call IMAGE_TEMPLATE,chaos-daemon,images/chaos-daemon))
-$(eval $(call IMAGE_TEMPLATE,chaos-mesh,images/chaos-mesh))
-$(eval $(call IMAGE_TEMPLATE,chaos-dashboard,images/chaos-dashboard))
-$(eval $(call IMAGE_TEMPLATE,build-env,images/build-env))
-$(eval $(call IMAGE_TEMPLATE,e2e-helper,test/cmd/e2e_helper))
-$(eval $(call IMAGE_TEMPLATE,chaos-mesh-protoc,hack/protoc))
-$(eval $(call IMAGE_TEMPLATE,chaos-mesh-e2e,test/image/e2e))
-$(eval $(call IMAGE_TEMPLATE,chaos-kernel,images/chaos-kernel))
-$(eval $(call IMAGE_TEMPLATE,chaos-jvm,images/chaos-jvm))
-
-binary: $(BINARIES)
-
-docker-push:
-	docker push "${DOCKER_REGISTRY_PREFIX}pingcap/chaos-mesh:${IMAGE_TAG}"
-	docker push "${DOCKER_REGISTRY_PREFIX}pingcap/chaos-dashboard:${IMAGE_TAG}"
-	docker push "${DOCKER_REGISTRY_PREFIX}pingcap/chaos-daemon:${IMAGE_TAG}"
-
-docker-push-e2e:
-	docker push "${DOCKER_REGISTRY_PREFIX}pingcap/e2e-helper:${IMAGE_TAG}"
-
-# the version of dns server should keep consistent with helm
-DNS_SERVER_VERSION ?= v0.2.0
-docker-push-dns-server:
-	docker pull pingcap/coredns:${DNS_SERVER_VERSION}
-	docker tag pingcap/coredns:${DNS_SERVER_VERSION} "${DOCKER_REGISTRY_PREFIX}pingcap/coredns:${DNS_SERVER_VERSION}"
-	docker push "${DOCKER_REGISTRY_PREFIX}pingcap/coredns:${DNS_SERVER_VERSION}"
-
-docker-push-chaos-kernel:
-	docker push "${DOCKER_REGISTRY_PREFIX}pingcap/chaos-kernel:${IMAGE_TAG}"
-
-$(GOBIN)/controller-gen:
-	$(GO) get sigs.k8s.io/controller-tools/cmd/controller-gen@v0.2.5
-$(GOBIN)/revive:
-	$(GO) get github.com/mgechev/revive@v1.0.2-0.20200225072153-6219ca02fffb
-$(GOBIN)/failpoint-ctl:
-	$(GO) get github.com/pingcap/failpoint/failpoint-ctl@v0.0.0-20200210140405-f8f9fb234798
-$(GOBIN)/goimports:
-	$(GO) get golang.org/x/tools/cmd/goimports@v0.0.0-20200309202150-20ab64c0d93f
-$(GOBIN)/gosec:
-	$(GO) get github.com/securego/gosec/cmd/gosec@v0.0.0-20200401082031-e946c8c39989
-
-lint: $(GOBIN)/revive
-	@echo "linting"
-	$< -formatter friendly -config revive.toml $$($(PACKAGE_LIST))
-
-bin/chaos-builder:
-	$(CGOENV) go build -ldflags '$(LDFLAGS)' -o bin/chaos-builder ./cmd/chaos-builder/...
-
-chaos-build: bin/chaos-builder
-	bin/chaos-builder
-
-# Generate code
-generate: $(GOBIN)/controller-gen chaos-build
-	cd ./api/v1alpha1 ;\
-		$< object:headerFile=../../hack/boilerplate/boilerplate.generatego.txt paths="./..." ;
-
-manifests/crd.yaml: config ensure-kustomize
-	$(KUSTOMIZE_BIN) build config/default > manifests/crd.yaml
-
-yaml: manifests/crd.yaml
-
-# Generate Go files from Chaos Mesh proto files.
-ifeq ($(IN_DOCKER),1)
-proto:
-	for dir in pkg/chaosdaemon ; do\
-		protoc -I $$dir/pb $$dir/pb/*.proto --go_out=plugins=grpc:$$dir/pb --go_out=./$$dir/pb ;\
-	done
-else
-proto: image-chaos-mesh-protoc
-	docker run --rm --workdir /mnt/ --volume $(shell pwd):/mnt \
-		--user $(shell id -u):$(shell id -g) --env IN_DOCKER=1 ${DOCKER_REGISTRY_PREFIX}pingcap/chaos-mesh-protoc \
-		/usr/bin/make proto
-
-	make fmt
-endif
-
-tools := kubectl helm kind kubebuilder kustomize kubetest2
-define DOWNLOAD_TOOL
-ensure-$(1):
-	@echo "ensuring $(1)"
-	ROOT=$(ROOT) && source ./hack/lib.sh && hack::ensure_$(1)
-
-all-tool-dependencies := $(all-tool-dependencies) ensure-$(1)
-endef
-
-$(foreach tool, $(tools), $(eval $(call DOWNLOAD_TOOL,$(tool))))
-
-ensure-all: $(all-tool-dependencies)
-
-install-local-coverage-tools:
-	go get github.com/axw/gocov/gocov \
-	&& go get github.com/AlekSi/gocov-xml \
-	&& go get -u github.com/matm/gocov-html
-
-.PHONY: all clean test install manifests groupimports fmt vet tidy image \
-	docker-push lint generate config mockgen generate-mock \
-	$(all-tool-dependencies) install.sh $(GO_TARGET_PHONY) \
-	manager chaosfs chaosdaemon chaos-dashboard \
-	dashboard dashboard-server-frontend gosec-scan \
-	proto bin/chaos-builder go_build_cache_directory
+.PHONY: bin/chaos-builder
+bin/chaos-builder: SHELL:=$(RUN_IN_DEV_SHELL)
+bin/chaos-builder: images/dev-env/.dockerbuilt
+	$(CGOENV) go build -ldflags '$(LDFLAGS)' -buildvcs=false -o bin/chaos-builder ./cmd/chaos-builder/...

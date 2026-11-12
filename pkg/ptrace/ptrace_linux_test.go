@@ -1,15 +1,18 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+//go:build cgo
 
 package ptrace
 
@@ -22,22 +25,17 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/go-logr/zapr"
-	"go.uber.org/zap"
-
-	"github.com/chaos-mesh/chaos-mesh/test/pkg/timer"
-
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/chaos-mesh/chaos-mesh/pkg/log"
+	"github.com/chaos-mesh/chaos-mesh/test/pkg/timer"
 )
 
 func TestPTrace(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecsWithDefaultAndCustomReporters(t,
-		"PTrace Suit",
-		[]Reporter{envtest.NewlineReporter{}})
+	RunSpecs(t, "PTrace Suit")
 }
 
 var _ = BeforeSuite(func(done Done) {
@@ -49,10 +47,6 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(err).NotTo(HaveOccurred())
 
 	By("register logger")
-	zapLog, err := zap.NewDevelopment()
-	Expect(err).NotTo(HaveOccurred())
-	log := zapr.NewLogger(zapLog)
-	RegisterLogger(log)
 
 	close(done)
 })
@@ -61,6 +55,8 @@ var _ = BeforeSuite(func(done Done) {
 // http://onsi.github.io/ginkgo to learn more.
 
 var _ = Describe("PTrace", func() {
+
+	logger := log.NewZapLoggerWithWriter(GinkgoWriter)
 
 	var t *timer.Timer
 	var program *TracedProgram
@@ -73,7 +69,7 @@ var _ = Describe("PTrace", func() {
 
 		time.Sleep(time.Millisecond)
 
-		program, err = Trace(t.Pid())
+		program, err = Trace(t.Pid(), logger)
 		Expect(err).ShouldNot(HaveOccurred(), "error: %+v", err)
 	})
 
@@ -99,7 +95,7 @@ var _ = Describe("PTrace", func() {
 	})
 
 	It("double trace should get error", func() {
-		_, err := Trace(t.Pid())
+		_, err := Trace(t.Pid(), logger)
 		Expect(err).Should(HaveOccurred())
 	})
 
@@ -139,7 +135,7 @@ var _ = Describe("PTrace", func() {
 		err := program.Detach()
 		Expect(err).ShouldNot(HaveOccurred(), "error: %+v", err)
 
-		program, err = Trace(t.Pid())
+		program, err = Trace(t.Pid(), logger)
 		Expect(err).ShouldNot(HaveOccurred(), "error: %+v", err)
 	})
 
@@ -151,7 +147,7 @@ var _ = Describe("PTrace", func() {
 		time.Sleep(time.Millisecond)
 
 		pid := p.Process.Pid
-		program, err := Trace(pid)
+		program, err := Trace(pid, logger)
 		Expect(err).ShouldNot(HaveOccurred(), "error: %+v", err)
 
 		err = program.Detach()

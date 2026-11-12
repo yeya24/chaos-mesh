@@ -1,0 +1,158 @@
+// Copyright 2021 Chaos Mesh Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+package workflow
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"gorm.io/gorm"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	"github.com/chaos-mesh/chaos-mesh/pkg/dashboard/core"
+	"github.com/chaos-mesh/chaos-mesh/pkg/dashboard/store/utils"
+)
+
+var log = ctrl.Log.WithName("store/workflow")
+
+type Store struct {
+	db *gorm.DB
+}
+
+func NewStore(db *gorm.DB) (core.WorkflowStore, error) {
+	if err := db.AutoMigrate(&core.WorkflowEntity{}); err != nil {
+		return nil, fmt.Errorf("migrate workflow table: %w", err)
+	}
+
+	return &Store{db}, nil
+}
+
+func (it *Store) List(ctx context.Context, namespace, name string, archived bool) ([]*core.WorkflowEntity, error) {
+	var entities []core.WorkflowEntity
+	query, args := utils.ConstructQueryArgs("", namespace, name, "")
+	db := it.db.WithContext(ctx)
+	if query != "" {
+		db = db.Where(query, args...)
+	}
+
+	err := db.Where("archived = ?", archived).Find(&entities).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*core.WorkflowEntity
+	for _, item := range entities {
+		result = append(result, &item)
+	}
+	return result, nil
+}
+
+func (it *Store) ListMeta(ctx context.Context, namespace, name string, archived bool) ([]*core.WorkflowMeta, error) {
+	entities, err := it.List(ctx, namespace, name, archived)
+	if err != nil {
+		return nil, err
+	}
+	var result []*core.WorkflowMeta
+	for _, item := range entities {
+		result = append(result, &item.WorkflowMeta)
+	}
+	return result, nil
+}
+
+func (it *Store) FindByID(ctx context.Context, id uint) (*core.WorkflowEntity, error) {
+	result := new(core.WorkflowEntity)
+	if err := it.db.WithContext(ctx).Where(
+		"id = ?", id).
+		First(result).Error; err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (it *Store) FindByUID(ctx context.Context, uid string) (*core.WorkflowEntity, error) {
+	result := new(core.WorkflowEntity)
+	if err := it.db.WithContext(ctx).Where(
+		"uid = ?", uid).
+		Take(result).Error; err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (it *Store) FindMetaByUID(ctx context.Context, UID string) (*core.WorkflowMeta, error) {
+	entity, err := it.FindByUID(ctx, UID)
+	if err != nil {
+		return nil, err
+	}
+	return &entity.WorkflowMeta, nil
+}
+
+func (it *Store) Save(ctx context.Context, entity *core.WorkflowEntity) error {
+	return it.db.WithContext(ctx).Save(entity).Error
+}
+
+func (it *Store) DeleteByUID(ctx context.Context, uid string) error {
+	return it.db.WithContext(ctx).Where("uid = ?", uid).Unscoped().
+		Delete(&core.WorkflowEntity{}).Error
+}
+
+func (it *Store) DeleteByUIDs(ctx context.Context, uids []string) error {
+	return it.db.WithContext(ctx).Where("uid IN (?)", uids).Unscoped().Delete(&core.WorkflowEntity{}).Error
+}
+
+func (it *Store) DeleteByFinishTime(ctx context.Context, ttl time.Duration) error {
+	workflows, err := it.ListMeta(ctx, "", "", true)
+	if err != nil {
+		return err
+	}
+
+	nowTime := time.Now()
+	for _, wfl := range workflows {
+		if wfl.FinishTime == nil {
+			log.Error(nil, "workflow finish time is nil when deleting archived workflow records, skip it", "workflow", wfl)
+			continue
+		}
+		if wfl.FinishTime.Add(ttl).Before(nowTime) {
+			if err := it.db.WithContext(ctx).Unscoped().Delete(&core.WorkflowEntity{}, wfl.ID).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (it *Store) MarkAsArchived(ctx context.Context, namespace, name string) error {
+	if err := it.db.WithContext(ctx).Model(&core.WorkflowEntity{}).
+		Where("namespace = ? AND name = ? AND archived = ?", namespace, name, false).
+		Updates(map[string]any{"archived": true, "finish_time": gorm.Expr("COALESCE(finish_time, ?)", time.Now().Format(time.RFC3339))}).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return nil
+}
+
+func (it *Store) MarkAsArchivedWithUID(ctx context.Context, uid string) error {
+	if err := it.db.WithContext(ctx).Model(&core.WorkflowEntity{}).
+		Where("uid = ? AND archived = ?", uid, false).
+		Updates(map[string]any{"archived": true, "finish_time": gorm.Expr("COALESCE(finish_time, ?)", time.Now())}).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return nil
+}

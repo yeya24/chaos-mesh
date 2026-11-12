@@ -1,28 +1,32 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
+// Package portforward forwards local ports to Kubernetes pods selected directly or through resource names.
 package portforward
 
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -32,7 +36,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
-	"k8s.io/klog"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 )
 
@@ -53,6 +56,7 @@ type portForwarder struct {
 	config    *rest.Config
 	client    kubernetes.Interface
 	enableLog bool
+	logger    logr.Logger
 }
 
 var _ PortForward = &portForwarder{}
@@ -68,6 +72,7 @@ func (f *portForwarder) forwardPorts(podKey, method string, url *url.URL, addres
 	readyChan := make(chan struct{})
 	fw, err := portforward.NewOnAddresses(dialer, addresses, ports, ctx.Done(), readyChan, w, w)
 	if err != nil {
+		cancel()
 		return nil, nil, err
 	}
 
@@ -82,13 +87,13 @@ func (f *portForwarder) forwardPorts(podKey, method string, url *url.URL, addres
 		lineScanner := bufio.NewScanner(r)
 		for lineScanner.Scan() {
 			if f.enableLog {
-				klog.Infof("log from port forwarding %q: %s", podKey, lineScanner.Text())
+				f.logger.Info(fmt.Sprintf("log from port forwarding %q: %s", podKey, lineScanner.Text()))
 			}
 		}
 	}()
 
 	// run port forwarding
-	errChan := make(chan error)
+	errChan := make(chan error, 1)
 	go func() {
 		errChan <- fw.ForwardPorts()
 	}()
@@ -130,7 +135,8 @@ func (f *portForwarder) Forward(namespace, resourceName string, addresses []stri
 		return nil, nil, err
 	}
 
-	pod, err := f.client.CoreV1().Pods(namespace).Get(forwardablePod.Name, metav1.GetOptions{})
+	// FIXME: get context from parameter
+	pod, err := f.client.CoreV1().Pods(namespace).Get(context.TODO(), forwardablePod.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -140,7 +146,7 @@ func (f *portForwarder) Forward(namespace, resourceName string, addresses []stri
 // ForwardPod would port-forward target Pod
 func (f *portForwarder) ForwardPod(pod *corev1.Pod, addresses []string, ports []string) (forwardedPorts []portforward.ForwardedPort, cancel context.CancelFunc, err error) {
 	if pod.Status.Phase != corev1.PodRunning {
-		return nil, nil, fmt.Errorf("unable to forward port because pod is not running. Current status=%v", pod.Status.Phase)
+		return nil, nil, errors.Errorf("unable to forward port because pod is not running. Current status=%v", pod.Status.Phase)
 	}
 
 	req := f.client.CoreV1().RESTClient().Post().
@@ -153,7 +159,7 @@ func (f *portForwarder) ForwardPod(pod *corev1.Pod, addresses []string, ports []
 }
 
 // NewPortForwarder would create a new port-forward
-func NewPortForwarder(ctx context.Context, restClientGetter genericclioptions.RESTClientGetter, enableLog bool) (PortForward, error) {
+func NewPortForwarder(ctx context.Context, restClientGetter genericclioptions.RESTClientGetter, enableLog bool, logger logr.Logger) (PortForward, error) {
 	config, err := restClientGetter.ToRESTConfig()
 	if err != nil {
 		return nil, err
@@ -168,6 +174,7 @@ func NewPortForwarder(ctx context.Context, restClientGetter genericclioptions.RE
 		config:           config,
 		client:           client,
 		enableLog:        enableLog,
+		logger:           logger,
 	}
 	return f, nil
 }

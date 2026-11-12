@@ -1,37 +1,40 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package podnetworkchaos
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/chaos-mesh/chaos-mesh/api/v1alpha1"
-	. "github.com/chaos-mesh/chaos-mesh/controllers/test"
+	"github.com/chaos-mesh/chaos-mesh/cmd/chaos-controller-manager/provider"
+	"github.com/chaos-mesh/chaos-mesh/controllers/test"
+	"github.com/chaos-mesh/chaos-mesh/controllers/utils/recorder"
 	"github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/pb"
 	"github.com/chaos-mesh/chaos-mesh/pkg/mock"
-	. "github.com/chaos-mesh/chaos-mesh/pkg/testutils"
+	"github.com/chaos-mesh/chaos-mesh/pkg/testutils"
 )
 
 func setHostNetwork(objs []runtime.Object) {
@@ -42,66 +45,143 @@ func setHostNetwork(objs []runtime.Object) {
 	}
 }
 
+func TestBuildIptablesChain(t *testing.T) {
+	tests := []struct {
+		name           string
+		behavior       v1alpha1.NetworkChaosPartitionBehavior
+		target         string
+		protocol       string
+		fallbackTarget string
+	}{
+		{
+			name:   "defaults to drop",
+			target: "DROP",
+		},
+		{
+			name:     "explicitly drops",
+			behavior: v1alpha1.DropPartitionBehavior,
+			target:   "DROP",
+		},
+		{
+			name:           "rejects TCP with a reset",
+			behavior:       v1alpha1.RejectPartitionBehavior,
+			target:         "REJECT --reject-with tcp-reset",
+			protocol:       "tcp",
+			fallbackTarget: "REJECT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chain, err := buildIptablesChain(v1alpha1.RawIptables{
+				Name:              "OUTPUT/example",
+				Direction:         v1alpha1.Output,
+				PartitionBehavior: tt.behavior,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if chain.Target != tt.target || chain.Protocol != tt.protocol || chain.FallbackTarget != tt.fallbackTarget {
+				t.Fatalf(
+					"got target=%q protocol=%q fallback target=%q, want target=%q protocol=%q fallback target=%q",
+					chain.Target,
+					chain.Protocol,
+					chain.FallbackTarget,
+					tt.target,
+					tt.protocol,
+					tt.fallbackTarget,
+				)
+			}
+		})
+	}
+
+	t.Run("rejects an unknown direction", func(t *testing.T) {
+		_, err := buildIptablesChain(v1alpha1.RawIptables{Direction: "sideways"})
+		if err == nil {
+			t.Fatal("expected an error for an unknown direction")
+		}
+	})
+
+	t.Run("rejects an unknown partition behavior", func(t *testing.T) {
+		_, err := buildIptablesChain(v1alpha1.RawIptables{
+			Direction:         v1alpha1.Output,
+			PartitionBehavior: "unknown",
+		})
+		if err == nil {
+			t.Fatal("expected an error for an unknown partition behavior")
+		}
+	})
+}
+
 func TestHostNetworkOption(t *testing.T) {
-	defer mock.With("MockChaosDaemonClient", &MockChaosDaemonClient{})()
+	defer mock.With("MockChaosDaemonClient", &test.MockChaosDaemonClient{})()
+	RegisterTestingT(t)
 
 	testCases := []struct {
 		name                     string
 		enableHostNetworkTesting bool
-		errorEvaluation          func(t *testing.T, err error)
+		errorEvaluation          func(err string)
 	}{
 		{
 			name:                     "host networking testing disabled (default)",
 			enableHostNetworkTesting: false,
-			errorEvaluation: func(t *testing.T, err error) {
-				if err == nil {
-					t.Errorf("expected failure on hostNetwork pods")
-				}
-				if err != nil && !strings.Contains(err.Error(), "it's dangerous to inject network chaos on a pod") {
-					t.Errorf("expected failure on hostNetwork pods, but got %v", err)
-				}
+			errorEvaluation: func(err string) {
+				Expect(err).To(ContainSubstring("It's dangerous to inject network chaos on a pod"))
 			},
 		},
 		{
 			name:                     "host networking testing enabled",
 			enableHostNetworkTesting: true,
-			errorEvaluation: func(t *testing.T, err error) {
-				if err != nil {
-					t.Errorf("failed to apply hostNetwork chaos got %v", err)
-				}
+			errorEvaluation: func(err string) {
+				Expect(err).To(Equal(""))
 			},
 		},
 	}
 
 	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			objs, _ := GenerateNPods("p", 1, PodArg{})
 
-			setHostNetwork(objs)
+		objs, _ := testutils.GenerateNPods("p", 1, testutils.PodArg{})
 
-			chaos := &v1alpha1.PodNetworkChaos{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "PodChaos",
-					APIVersion: "v1",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: metav1.NamespaceDefault,
-					Name:      "p0",
-				},
-				Spec: v1alpha1.PodNetworkChaosSpec{},
-			}
+		setHostNetwork(objs)
 
-			var r client.Reader
-			h := &Handler{
-				Client:                  fake.NewFakeClientWithScheme(scheme.Scheme, objs...),
-				Reader:                  r,
-				Log:                     zap.New(zap.UseDevMode(true)),
-				AllowHostNetworkTesting: testCase.enableHostNetworkTesting,
-			}
+		chaos := &v1alpha1.PodNetworkChaos{
+			Kind:       "PodNetworkChaos",
+			APIVersion: "v1",
+			Namespace:  metav1.NamespaceDefault,
+			Name:       "p0",
+			Generation: 1,
+			Spec:       v1alpha1.PodNetworkChaosSpec{},
+		}
+		objs = append(objs, chaos)
 
-			testCase.errorEvaluation(t, h.Apply(context.TODO(), chaos))
-		})
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(provider.NewScheme()).
+			WithRuntimeObjects(objs...).
+			WithStatusSubresource(&v1alpha1.PodNetworkChaos{}).
+			Build()
 
+		recorder := recorder.NewDebugRecorder()
+		h := &Reconciler{
+			Client:                  fakeClient,
+			Recorder:                recorder,
+			Log:                     zap.New(zap.UseDevMode(true)),
+			AllowHostNetworkTesting: testCase.enableHostNetworkTesting,
+		}
+
+		_, err := h.Reconcile(
+			context.TODO(),
+			ctrl.Request{
+				Namespace: metav1.NamespaceDefault,
+				Name:      "p0",
+			})
+		Expect(err).To(BeNil())
+
+		fakeClient.Get(context.Background(), types.NamespacedName{
+			Namespace: metav1.NamespaceDefault,
+			Name:      "p0",
+		}, chaos)
+
+		testCase.errorEvaluation(chaos.Status.FailedMessage)
 	}
 }
 
@@ -117,29 +197,52 @@ func TestMergenetem(t *testing.T) {
 		}
 	})
 
-	t.Run("delay loss", func(t *testing.T) {
+	t.Run("delay loss rate", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 
 		spec := v1alpha1.TcParameter{
 			Delay: &v1alpha1.DelaySpec{
-				Latency:     "90ms",
+				Latency:     "1s",
 				Correlation: "25",
-				Jitter:      "90ms",
+				Jitter:      "100ms",
 			},
 			Loss: &v1alpha1.LossSpec{
 				Loss:        "25",
 				Correlation: "25",
 			},
+			Rate: &v1alpha1.RateSpec{
+				Rate: "25mbps",
+			},
 		}
 		m, err := mergeNetem(spec)
 		g.Expect(err).ShouldNot(HaveOccurred())
 		em := &pb.Netem{
-			Time:      90000,
-			Jitter:    90000,
+			Time:      "1s",
+			Jitter:    "100ms",
 			DelayCorr: 25,
 			Loss:      25,
 			LossCorr:  25,
+			Rate:      "25mbps",
 		}
 		g.Expect(m).Should(Equal(em))
+
+		// Latency should have units in duration
+		spec = v1alpha1.TcParameter{
+			Delay: &v1alpha1.DelaySpec{
+				Latency: "1000",
+			},
+		}
+		_, err = mergeNetem(spec)
+		g.Expect(err).Should(HaveOccurred())
+
+		// Jitter should have units in duration
+		spec = v1alpha1.TcParameter{
+			Delay: &v1alpha1.DelaySpec{
+				Latency: "1s",
+				Jitter:  "100",
+			},
+		}
+		_, err = mergeNetem(spec)
+		g.Expect(err).Should(HaveOccurred())
 	})
 }

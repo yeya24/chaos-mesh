@@ -1,15 +1,17 @@
-// Copyright 2020 Chaos Mesh Authors.
+// Copyright 2021 Chaos Mesh Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
 package chaosdaemon
 
@@ -19,9 +21,11 @@ import (
 	"strings"
 
 	"github.com/golang/protobuf/ptypes/empty"
+	"github.com/pkg/errors"
 
 	"github.com/chaos-mesh/chaos-mesh/pkg/bpm"
 	pb "github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/pb"
+	"github.com/chaos-mesh/chaos-mesh/pkg/chaosdaemon/util"
 )
 
 const (
@@ -31,12 +35,18 @@ const (
 )
 
 func (s *DaemonServer) SetIptablesChains(ctx context.Context, req *pb.IptablesChainsRequest) (*empty.Empty, error) {
+	log := s.getLoggerFromContext(ctx)
 	log.Info("Set iptables chains", "request", req)
 
 	pid, err := s.crClient.GetPidFromContainerID(ctx, req.ContainerId)
 	if err != nil {
-		log.Error(err, "error while getting PID")
-		return nil, err
+		log.Info("container PID unavailable, falling back to sandbox", "error", err.Error())
+
+		pid, err = s.crClient.GetSandboxPidFromPodUID(ctx, req.PodUid)
+		if err != nil {
+			log.Error(err, "error while getting PID")
+			return nil, err
+		}
 	}
 
 	iptables := buildIptablesClient(ctx, req.EnterNS, pid)
@@ -86,37 +96,12 @@ func (iptables *iptablesClient) setIptablesChains(chains []*pb.Chain) error {
 }
 
 func (iptables *iptablesClient) setIptablesChain(chain *pb.Chain) error {
-	var matchPart string
-	if chain.Direction == pb.Chain_INPUT {
-		matchPart = "src"
-	} else if chain.Direction == pb.Chain_OUTPUT {
-		matchPart = "dst"
-	} else {
-		return fmt.Errorf("unknown chain direction %d", chain.Direction)
+	rules, err := buildIptablesRules(chain)
+	if err != nil {
+		return err
 	}
 
-	protocolAndPort := chain.Protocol
-	if len(protocolAndPort) > 0 {
-		if len(chain.SourcePorts) > 0 {
-			protocolAndPort += " " + chain.SourcePorts
-		}
-
-		if len(chain.DestinationPorts) > 0 {
-			protocolAndPort += " " + chain.DestinationPorts
-		}
-	}
-
-	rules := []string{}
-
-	if len(chain.Ipsets) == 0 {
-		rules = append(rules, strings.TrimSpace(fmt.Sprintf("-A %s -j %s -w 5 %s", chain.Name, chain.Target, protocolAndPort)))
-	}
-
-	for _, ipset := range chain.Ipsets {
-		rules = append(rules, strings.TrimSpace(fmt.Sprintf("-A %s -m set --match-set %s %s -j %s -w 5 %s",
-			chain.Name, ipset, matchPart, chain.Target, protocolAndPort)))
-	}
-	err := iptables.createNewChain(&iptablesChain{
+	err = iptables.createNewChain(&iptablesChain{
 		Name:  chain.Name,
 		Rules: rules,
 	})
@@ -124,24 +109,88 @@ func (iptables *iptablesClient) setIptablesChain(chain *pb.Chain) error {
 		return err
 	}
 
-	if chain.Direction == pb.Chain_INPUT {
-		err := iptables.ensureRule(&iptablesChain{
+	switch chain.Direction {
+	case pb.Chain_INPUT:
+		return iptables.ensureRule(&iptablesChain{
 			Name: "CHAOS-INPUT",
 		}, "-A CHAOS-INPUT -j "+chain.Name)
-		if err != nil {
-			return err
-		}
-	} else if chain.Direction == pb.Chain_OUTPUT {
-		iptables.ensureRule(&iptablesChain{
+	case pb.Chain_OUTPUT:
+		return iptables.ensureRule(&iptablesChain{
 			Name: "CHAOS-OUTPUT",
 		}, "-A CHAOS-OUTPUT -j "+chain.Name)
-		if err != nil {
-			return err
-		}
-	} else {
-		return fmt.Errorf("unknown direction %d", chain.Direction)
+	default:
+		return errors.Errorf("unknown direction %d", chain.Direction)
 	}
-	return nil
+}
+
+func buildIptablesRules(chain *pb.Chain) ([]string, error) {
+	var matchPart string
+	var interfaceMatcher string
+	if chain.Direction == pb.Chain_INPUT {
+		matchPart = "src,dst"
+		interfaceMatcher = "-i"
+	} else if chain.Direction == pb.Chain_OUTPUT {
+		matchPart = "dst,dst"
+		interfaceMatcher = "-o"
+	} else {
+		return nil, errors.Errorf("unknown chain direction %d", chain.Direction)
+	}
+
+	if chain.Device == "" {
+		chain.Device = defaultDevice
+	}
+
+	protocolAndPort := ""
+	if len(chain.Protocol) > 0 {
+		protocolAndPort += fmt.Sprintf("--protocol %s", chain.Protocol)
+
+		if len(chain.SourcePorts) > 0 {
+			if strings.Contains(chain.SourcePorts, ",") {
+				protocolAndPort += fmt.Sprintf(" -m multiport --source-ports %s", chain.SourcePorts)
+			} else {
+				protocolAndPort += fmt.Sprintf(" --source-port %s", chain.SourcePorts)
+			}
+		}
+
+		if len(chain.DestinationPorts) > 0 {
+			if strings.Contains(chain.DestinationPorts, ",") {
+				protocolAndPort += fmt.Sprintf(" -m multiport --destination-ports %s", chain.DestinationPorts)
+			} else {
+				protocolAndPort += fmt.Sprintf(" --destination-port %s", chain.DestinationPorts)
+			}
+		}
+
+		if len(chain.TcpFlags) > 0 {
+			protocolAndPort += fmt.Sprintf(" --tcp-flags %s", chain.TcpFlags)
+		}
+	}
+
+	rules := make([]string, 0, 2*len(chain.Ipsets)+2)
+
+	if len(chain.Ipsets) == 0 {
+		rule := fmt.Sprintf("-A %s %s %s", chain.Name, interfaceMatcher, chain.Device)
+		if protocolAndPort != "" {
+			rule += " " + protocolAndPort
+		}
+		rules = append(rules, fmt.Sprintf("%s -j %s -w 5", rule, chain.Target))
+		if chain.FallbackTarget != "" {
+			rules = append(rules, fmt.Sprintf("-A %s %s %s -j %s -w 5", chain.Name, interfaceMatcher, chain.Device, chain.FallbackTarget))
+		}
+	}
+
+	for _, ipset := range chain.Ipsets {
+		rule := fmt.Sprintf("-A %s %s %s -m set --match-set %s %s", chain.Name, interfaceMatcher, chain.Device, ipset, matchPart)
+		if protocolAndPort != "" {
+			rule += " " + protocolAndPort
+		}
+		rules = append(rules, fmt.Sprintf("%s -j %s -w 5", rule, chain.Target))
+		if chain.FallbackTarget != "" {
+			rules = append(rules, fmt.Sprintf("-A %s %s %s -m set --match-set %s %s -j %s -w 5",
+				chain.Name, interfaceMatcher, chain.Device, ipset, matchPart, chain.FallbackTarget))
+		}
+	}
+
+	return rules, nil
 }
 
 func (iptables *iptablesClient) initializeEnv() error {
@@ -171,7 +220,7 @@ func (iptables *iptablesClient) createNewChain(chain *iptablesChain) error {
 	if iptables.enterNS {
 		processBuilder = processBuilder.SetNS(iptables.pid, bpm.NetNS)
 	}
-	cmd := processBuilder.Build()
+	cmd := processBuilder.Build(iptables.ctx)
 	out, err := cmd.CombinedOutput()
 
 	if (err == nil && len(out) == 0) ||
@@ -180,7 +229,7 @@ func (iptables *iptablesClient) createNewChain(chain *iptablesChain) error {
 		return iptables.deleteAndWriteRules(chain)
 	}
 
-	return encodeOutputToError(out, err)
+	return util.EncodeOutputToError(out, err)
 }
 
 // deleteAndWriteRules will remove all existing function in the chain
@@ -208,10 +257,10 @@ func (iptables *iptablesClient) ensureRule(chain *iptablesChain, rule string) er
 	if iptables.enterNS {
 		processBuilder = processBuilder.SetNS(iptables.pid, bpm.NetNS)
 	}
-	cmd := processBuilder.Build()
+	cmd := processBuilder.Build(iptables.ctx)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return encodeOutputToError(out, err)
+		return util.EncodeOutputToError(out, err)
 	}
 
 	if strings.Contains(string(out), rule) {
@@ -224,10 +273,10 @@ func (iptables *iptablesClient) ensureRule(chain *iptablesChain, rule string) er
 	if iptables.enterNS {
 		processBuilder = processBuilder.SetNS(iptables.pid, bpm.NetNS)
 	}
-	cmd = processBuilder.Build()
+	cmd = processBuilder.Build(iptables.ctx)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
-		return encodeOutputToError(out, err)
+		return util.EncodeOutputToError(out, err)
 	}
 
 	return nil
@@ -238,10 +287,10 @@ func (iptables *iptablesClient) flushIptablesChain(chain *iptablesChain) error {
 	if iptables.enterNS {
 		processBuilder = processBuilder.SetNS(iptables.pid, bpm.NetNS)
 	}
-	cmd := processBuilder.Build()
+	cmd := processBuilder.Build(iptables.ctx)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return encodeOutputToError(out, err)
+		return util.EncodeOutputToError(out, err)
 	}
 
 	return nil
